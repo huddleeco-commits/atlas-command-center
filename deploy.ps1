@@ -3,16 +3,13 @@
 
 param(
     [switch]$SkipBuild,
-    [switch]$SkipRestart,
-    [switch]$UseSSH,
-    [string]$User = "Redhe"
+    [switch]$SkipRestart
 )
 
 $ErrorActionPreference = "Stop"
 
 $ServerIP = "100.117.103.53"
-$ServerPath = "\\$ServerIP\c$\Users\$User\command-center"
-$RemotePath = "C:\Users\$User\command-center"
+$ServerShare = "\\REDHEADKIDZCARD\command-center"
 $PM2Process = "command-center"
 
 Write-Host "=== Command Center Deploy ===" -ForegroundColor Cyan
@@ -30,80 +27,47 @@ if (-not $SkipBuild) {
     Write-Host "`n[1/3] Skipping build..." -ForegroundColor Gray
 }
 
-# Step 2: Copy files to server
+# Step 2: Copy files to server using robocopy
 Write-Host "`n[2/3] Copying files to server..." -ForegroundColor Yellow
 
-if ($UseSSH) {
-    # SSH/SCP deployment
-    Write-Host "  Using SSH/SCP for file transfer..." -ForegroundColor Cyan
-
-    # Copy dist folder
-    Write-Host "  Copying dist/..."
-    scp -r ./dist/* "${User}@${ServerIP}:${RemotePath}/dist/"
-
-    # Copy server files
-    Write-Host "  Copying server.js..."
-    scp ./server.js "${User}@${ServerIP}:${RemotePath}/"
-
-    Write-Host "  Copying agents.json..."
-    scp ./agents.json "${User}@${ServerIP}:${RemotePath}/"
-
-    Write-Host "  Copying package.json..."
-    scp ./package.json "${User}@${ServerIP}:${RemotePath}/"
-
-    Write-Host "Files copied via SSH!" -ForegroundColor Green
-
-} else {
-    # Windows file share deployment
-    # Verify server is reachable
-    if (-not (Test-Path $ServerPath)) {
-        Write-Host "Cannot reach server at $ServerPath" -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Options:" -ForegroundColor Yellow
-        Write-Host "  1. Map network drive with credentials:" -ForegroundColor White
-        Write-Host "     net use Z: $ServerPath /user:$User <password>" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  2. Use SSH deployment instead:" -ForegroundColor White
-        Write-Host "     .\deploy.ps1 -UseSSH" -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  3. Manual SCP commands:" -ForegroundColor White
-        Write-Host "     scp server.js agents.json package.json ${User}@${ServerIP}:${RemotePath}/" -ForegroundColor Cyan
-        Write-Host "     scp -r dist/* ${User}@${ServerIP}:${RemotePath}/dist/" -ForegroundColor Cyan
+# Ensure we have access to the share
+if (-not (Test-Path $ServerShare)) {
+    Write-Host "  Connecting to $ServerShare..." -ForegroundColor Yellow
+    $cred = Get-Credential -Message "Enter credentials for $ServerShare"
+    net use $ServerShare /user:$($cred.UserName) $($cred.GetNetworkCredential().Password)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Failed to connect to share!" -ForegroundColor Red
         exit 1
     }
-
-    # Copy dist folder
-    Write-Host "  Copying dist/..."
-    Copy-Item -Path ".\dist\*" -Destination "$ServerPath\dist\" -Recurse -Force
-
-    # Copy server files
-    Write-Host "  Copying server.js..."
-    Copy-Item -Path ".\server.js" -Destination "$ServerPath\" -Force
-
-    Write-Host "  Copying agents.json..."
-    Copy-Item -Path ".\agents.json" -Destination "$ServerPath\" -Force
-
-    Write-Host "  Copying package.json..."
-    Copy-Item -Path ".\package.json" -Destination "$ServerPath\" -Force
-
-    Write-Host "Files copied!" -ForegroundColor Green
 }
 
-# Step 3: Restart PM2 on server
-if (-not $SkipRestart) {
-    Write-Host "`n[3/3] Restarting PM2 on server..." -ForegroundColor Yellow
+# Copy dist folder using robocopy (mirror mode for efficiency)
+Write-Host "  Copying dist/ folder..."
+robocopy ".\dist" "$ServerShare\dist" /MIR /NJH /NJS /NDL /NC /NS /NP
+if ($LASTEXITCODE -ge 8) {
+    Write-Host "Failed to copy dist folder!" -ForegroundColor Red
+    exit 1
+}
 
-    if ($UseSSH) {
-        Write-Host "  Restarting via SSH..."
-        ssh "${User}@${ServerIP}" "pm2 restart $PM2Process"
-        Write-Host "PM2 restarted!" -ForegroundColor Green
-    } else {
-        Write-Host "  NOTE: Run on server to restart:" -ForegroundColor Yellow
-        Write-Host "    pm2 restart $PM2Process" -ForegroundColor Cyan
-        Write-Host "  OR use SSH deployment: .\deploy.ps1 -UseSSH" -ForegroundColor Yellow
-    }
+# Copy individual files
+Write-Host "  Copying server.js..."
+Copy-Item -Path ".\server.js" -Destination "$ServerShare\" -Force
+
+Write-Host "  Copying agents.json..."
+Copy-Item -Path ".\agents.json" -Destination "$ServerShare\" -Force
+
+Write-Host "  Copying package.json..."
+Copy-Item -Path ".\package.json" -Destination "$ServerShare\" -Force
+
+Write-Host "Files copied successfully!" -ForegroundColor Green
+
+# Step 3: Restart PM2 reminder
+if (-not $SkipRestart) {
+    Write-Host "`n[3/3] PM2 Restart Required" -ForegroundColor Yellow
+    Write-Host "  Run this on the server:" -ForegroundColor White
+    Write-Host "    pm2 restart $PM2Process" -ForegroundColor Cyan
 } else {
-    Write-Host "`n[3/3] Skipping PM2 restart..." -ForegroundColor Gray
+    Write-Host "`n[3/3] Skipping PM2 restart reminder..." -ForegroundColor Gray
 }
 
 Write-Host "`n=== Deploy Complete ===" -ForegroundColor Green

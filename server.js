@@ -190,6 +190,13 @@ app.get('/api/chats/:chatId/messages', authMiddleware, (req, res) => {
   res.json(messages);
 });
 
+app.delete('/api/chats/:chatId', authMiddleware, (req, res) => {
+  const { chatId } = req.params;
+  db.prepare('DELETE FROM messages WHERE chat_id = ?').run(chatId);
+  db.prepare('DELETE FROM chats WHERE id = ?').run(chatId);
+  res.json({ success: true });
+});
+
 app.get('/api/usage', authMiddleware, (req, res) => {
   const today = new Date().toISOString().split('T')[0];
   const usage = db.prepare('SELECT * FROM api_usage WHERE date = ?').get(today) || { tokens_in: 0, tokens_out: 0, cost: 0 };

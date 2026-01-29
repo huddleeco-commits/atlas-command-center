@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Command Center with ElevenLabs voice integration\n\n- Multi-agent chat interface with Claude AI\n- ElevenLabs TTS voice synthesis for agent responses\n- JWT authentication system\n- SQLite database for chat history\n- Real-time messaging via Socket.IO\n- Deploy script for production server\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(powershell -ExecutionPolicy Bypass -File deploy.ps1)",
+      "Bash(ping:*)",
+      "Bash(net view:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File deploy.ps1:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nUpdate deploy script with SSH option and better error handling\n\n- Added -UseSSH flag for SCP-based deployment\n- Better error messages with deployment alternatives\n- Added -User parameter for flexibility\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(net use \\\\REDHEADKIDZCARDUsers)",
+      "Bash(dir:*)",
+      "Bash(powershell -Command \"Test-Path ''\\\\REDHEADKIDZCARD\\\\command-center''; Get-ChildItem ''\\\\REDHEADKIDZCARD\\\\command-center'' -ErrorAction SilentlyContinue | Select-Object -First 3\")",
+      "Bash(powershell -Command \"net use ''\\\\REDHEADKIDZCARD\\\\command-center'' 2>&1\")",
+      "Bash(powershell -Command \"net use ''\\\\100.117.103.53\\\\command-center'' 2>&1\")",
+      "Bash(powershell -Command \"Test-Path ''\\\\REDHEADKIDZCARD\\\\command-center''\")",
+      "Bash(powershell -Command \"Test-Path ''\\\\100.117.103.53\\\\command-center''\")",
+      "Bash(powershell -Command \"net view ''\\\\100.117.103.53'' 2>&1\")",
+      "Bash(powershell -Command \"net view ''\\\\REDHEADKIDZCARD'' 2>&1\")",
+      "Bash(powershell -Command:*)",
+      "Bash(npm run build:*)"
+    ]
+  }
+}

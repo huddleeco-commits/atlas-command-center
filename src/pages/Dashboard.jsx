@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, LogOut, Zap, MessageSquare, Smile } from 'lucide-react';
+import { Send, LogOut, Zap, MessageSquare, Smile, Menu, X, Trash2 } from 'lucide-react';
 import AgentCard from '../components/AgentCard';
 import ChatMessage from '../components/ChatMessage';
 import UsagePanel from '../components/UsagePanel';
@@ -12,6 +12,7 @@ function Dashboard({ socket, token, onLogout }) {
   const [input, setInput] = useState('');
   const [typing, setTyping] = useState({});
   const [usage, setUsage] = useState({ today: { tokens_in: 0, tokens_out: 0, cost: 0 }, total: { tokens_in: 0, tokens_out: 0, cost: 0 } });
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -105,12 +106,33 @@ function Dashboard({ socket, token, onLogout }) {
     const chat = await res.json();
     setChats(prev => [chat, ...prev]);
     selectChat(chat);
+    setSidebarOpen(false); // Close sidebar on mobile after starting chat
   };
 
   const selectChat = (chat) => {
     setActiveChat(chat);
     setMessages([]);
     fetchMessages(chat.id);
+    setSidebarOpen(false); // Close sidebar on mobile after selecting chat
+  };
+
+  const deleteChat = async (e, chatId) => {
+    e.stopPropagation(); // Prevent selecting the chat when clicking delete
+    if (!confirm('Delete this chat? This cannot be undone.')) return;
+
+    try {
+      await fetch(`/api/chats/${chatId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setChats(prev => prev.filter(c => c.id !== chatId));
+      if (activeChat?.id === chatId) {
+        setActiveChat(null);
+        setMessages([]);
+      }
+    } catch (err) {
+      console.error('Failed to delete chat:', err);
+    }
   };
 
   const sendMessage = () => {
@@ -137,22 +159,43 @@ function Dashboard({ socket, token, onLogout }) {
 
   return (
     <div className="min-h-screen bg-dark-900 flex">
+      {/* Mobile Overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-20 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+
       {/* Sidebar */}
-      <div className="w-80 bg-dark-800 border-r border-dark-600 flex flex-col">
+      <div className={`
+        fixed lg:static inset-y-0 left-0 z-30
+        w-72 sm:w-80 bg-dark-800 border-r border-dark-600 flex flex-col
+        transform transition-transform duration-200 ease-in-out
+        ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+      `}>
         {/* Header */}
-        <div className="p-4 border-b border-dark-600">
-          <div className="flex items-center justify-between mb-4">
+        <div className="p-3 sm:p-4 border-b border-dark-600">
+          <div className="flex items-center justify-between mb-3 sm:mb-4">
             <div className="flex items-center gap-2">
-              <Zap className="w-6 h-6 text-gold" />
-              <span className="font-bold text-lg">BE1st</span>
+              <Zap className="w-5 sm:w-6 h-5 sm:h-6 text-gold" />
+              <span className="font-bold text-base sm:text-lg">BE1st</span>
             </div>
-            <button onClick={onLogout} className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
-              <LogOut className="w-5 h-5 text-gray-400" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button onClick={onLogout} className="p-2 hover:bg-dark-700 rounded-lg transition-colors">
+                <LogOut className="w-4 sm:w-5 h-4 sm:h-5 text-gray-400" />
+              </button>
+              <button
+                onClick={() => setSidebarOpen(false)}
+                className="p-2 hover:bg-dark-700 rounded-lg transition-colors lg:hidden"
+              >
+                <X className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
           </div>
-          
+
           {/* Agent Cards */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-1.5 sm:gap-2">
             {agents.map(agent => (
               <AgentCard
                 key={agent.id}
@@ -171,21 +214,28 @@ function Dashboard({ socket, token, onLogout }) {
             {chats.map(chat => {
               const agent = getAgent(chat.agent_id);
               return (
-                <button
+                <div
                   key={chat.id}
                   onClick={() => selectChat(chat)}
-                  className={`w-full p-3 rounded-lg text-left transition-colors mb-1 ${
+                  className={`w-full p-2.5 sm:p-3 rounded-lg text-left transition-colors mb-1 cursor-pointer group ${
                     activeChat?.id === chat.id ? 'bg-dark-600' : 'hover:bg-dark-700'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <span className="text-xl">{agent?.icon || '💬'}</span>
+                  <div className="flex items-center gap-2 sm:gap-3">
+                    <span className="text-lg sm:text-xl">{agent?.icon || '💬'}</span>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-white truncate">{agent?.name || 'Chat'}</p>
                       <p className="text-xs text-gray-500 truncate">{new Date(chat.updated_at).toLocaleDateString()}</p>
                     </div>
+                    <button
+                      onClick={(e) => deleteChat(e, chat.id)}
+                      className="p-1.5 opacity-0 group-hover:opacity-100 hover:bg-red-500/20 rounded transition-all"
+                      title="Delete chat"
+                    >
+                      <Trash2 className="w-4 h-4 text-red-400" />
+                    </button>
                   </div>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -196,24 +246,30 @@ function Dashboard({ socket, token, onLogout }) {
       </div>
 
       {/* Main Chat Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {activeChat ? (
           <>
             {/* Chat Header */}
-            <div className="h-16 border-b border-dark-600 flex items-center px-6">
-              <span className="text-2xl mr-3">{activeChatAgent?.icon}</span>
-              <div>
-                <h2 className="font-semibold text-white">{activeChatAgent?.name}</h2>
-                <p className="text-xs text-gray-400">{activeChatAgent?.role}</p>
+            <div className="h-14 sm:h-16 border-b border-dark-600 flex items-center px-3 sm:px-6">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="p-2 hover:bg-dark-700 rounded-lg transition-colors mr-2 lg:hidden"
+              >
+                <Menu className="w-5 h-5 text-gray-400" />
+              </button>
+              <span className="text-xl sm:text-2xl mr-2 sm:mr-3">{activeChatAgent?.icon}</span>
+              <div className="min-w-0 flex-1">
+                <h2 className="font-semibold text-white text-sm sm:text-base truncate">{activeChatAgent?.name}</h2>
+                <p className="text-xs text-gray-400 truncate">{activeChatAgent?.role}</p>
               </div>
-              <div className="ml-auto flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 ml-2">
                 <span className="w-2 h-2 bg-green-500 rounded-full"></span>
-                <span className="text-sm text-gray-400">Online</span>
+                <span className="text-xs sm:text-sm text-gray-400 hidden sm:inline">Online</span>
               </div>
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-6 chat-container">
+            <div className="flex-1 overflow-y-auto p-3 sm:p-6 chat-container">
               {messages.length === 0 ? (
                 <div className="h-full flex items-center justify-center">
                   <div className="text-center">
@@ -244,9 +300,9 @@ function Dashboard({ socket, token, onLogout }) {
             </div>
 
             {/* Input */}
-            <div className="p-4 border-t border-dark-600">
-              <div className="flex items-center gap-3 bg-dark-700 rounded-xl p-2">
-                <button className="p-2 hover:bg-dark-600 rounded-lg transition-colors">
+            <div className="p-2 sm:p-4 border-t border-dark-600">
+              <div className="flex items-center gap-2 sm:gap-3 bg-dark-700 rounded-xl p-1.5 sm:p-2">
+                <button className="p-1.5 sm:p-2 hover:bg-dark-600 rounded-lg transition-colors hidden sm:block">
                   <Smile className="w-5 h-5 text-gray-400" />
                 </button>
                 <input
@@ -255,35 +311,51 @@ function Dashboard({ socket, token, onLogout }) {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyPress={handleKeyPress}
                   placeholder="Type a message..."
-                  className="flex-1 bg-transparent text-white placeholder-gray-500 focus:outline-none"
+                  className="flex-1 bg-transparent text-white placeholder-gray-500 focus:outline-none text-sm sm:text-base px-2"
                 />
                 <button
                   onClick={sendMessage}
                   disabled={!input.trim()}
-                  className="p-2 bg-gold hover:bg-gold/90 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="p-2 sm:p-2.5 bg-gold hover:bg-gold/90 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <Send className="w-5 h-5 text-black" />
+                  <Send className="w-4 sm:w-5 h-4 sm:h-5 text-black" />
                 </button>
               </div>
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center">
-            <div className="text-center">
-              <MessageSquare className="w-16 h-16 text-gray-600 mx-auto mb-4" />
-              <h2 className="text-xl font-semibold text-white mb-2">Welcome to Command Center</h2>
-              <p className="text-gray-400 mb-6">Select an agent to start a conversation</p>
-              <div className="flex flex-wrap justify-center gap-3">
-                {agents.map(agent => (
-                  <button
-                    key={agent.id}
-                    onClick={() => startNewChat(agent.id)}
-                    className="flex items-center gap-2 px-4 py-2 bg-dark-700 hover:bg-dark-600 rounded-lg transition-colors"
-                  >
-                    <span>{agent.icon}</span>
-                    <span>{agent.name}</span>
-                  </button>
-                ))}
+          <div className="flex-1 flex flex-col">
+            {/* Mobile header when no chat selected */}
+            <div className="h-14 sm:h-16 border-b border-dark-600 flex items-center px-3 sm:px-6 lg:hidden">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="p-2 hover:bg-dark-700 rounded-lg transition-colors"
+              >
+                <Menu className="w-5 h-5 text-gray-400" />
+              </button>
+              <div className="flex items-center gap-2 ml-2">
+                <Zap className="w-5 h-5 text-gold" />
+                <span className="font-bold">BE1st</span>
+              </div>
+            </div>
+
+            <div className="flex-1 flex items-center justify-center p-4">
+              <div className="text-center">
+                <MessageSquare className="w-12 sm:w-16 h-12 sm:h-16 text-gray-600 mx-auto mb-3 sm:mb-4" />
+                <h2 className="text-lg sm:text-xl font-semibold text-white mb-2">Welcome to Command Center</h2>
+                <p className="text-gray-400 mb-4 sm:mb-6 text-sm sm:text-base">Select an agent to start a conversation</p>
+                <div className="flex flex-wrap justify-center gap-2 sm:gap-3">
+                  {agents.map(agent => (
+                    <button
+                      key={agent.id}
+                      onClick={() => startNewChat(agent.id)}
+                      className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-dark-700 hover:bg-dark-600 rounded-lg transition-colors text-sm sm:text-base"
+                    >
+                      <span>{agent.icon}</span>
+                      <span>{agent.name}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
