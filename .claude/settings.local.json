@@ -19,7 +19,11 @@
       "Bash(powershell -Command \"net view ''\\\\100.117.103.53'' 2>&1\")",
       "Bash(powershell -Command \"net view ''\\\\REDHEADKIDZCARD'' 2>&1\")",
       "Bash(powershell -Command:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd mobile UI, delete chats, and Flint-CommandCenter agent\n\n1. Mobile UI improvements:\n   - Responsive sidebar with hamburger menu toggle\n   - Collapsible sidebar on mobile with overlay\n   - Responsive grid layouts for agent cards\n   - Adjusted padding, font sizes, and spacing for mobile\n   - TV Dashboard now mobile-friendly\n\n2. Delete chats feature:\n   - Added trash icon on chat items \\(visible on hover\\)\n   - DELETE /api/chats/:chatId endpoint\n   - Removes chat and all messages from database\n\n3. New agent: Flint-CommandCenter\n   - Infrastructure Lead role\n   - Knows Command Center codebase, deployment, integrations\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd auto-restart to deploy script and file watcher\n\n- Deploy script now uses Z: drive mapping\n- Attempts SSH restart with plink or native SSH\n- Added watch-restart.js for server-side file watching\n- Fallback instructions if SSH fails\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nSimplify deploy script - remove SSH restart\n\nWatcher on server handles PM2 restarts automatically.\nScript now only builds and copies files.\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nEnhance agent prompts with Flint-CommandCenter awareness\n\nUpdates:\n- PRIME: Added Flint team roster, routing to Flint-CC for infrastructure\n- FLINT-SLABTRACK: Added sister Flints, coordination notes\n- FLINT-BLINK: Added Autopilot prototype coordination with Flint-CC\n- BOARDROOM: Added Flint-CC to participants, when to include guidance\n- FLINT-COMMANDCENTER: Comprehensive prompt with:\n  - Full Command Center architecture details\n  - Infrastructure specs \\(PM2, Tailscale, file share\\)\n  - BE1st ecosystem knowledge \\(Wiki.js, Kanban\\)\n  - PRD creation capability for Ralph\n  - Future integrations roadmap\n  - Key metrics to track\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ]
   }
 }

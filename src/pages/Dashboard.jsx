@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, LogOut, Zap, MessageSquare, Smile, Menu, X, Trash2 } from 'lucide-react';
+import { Send, LogOut, Zap, MessageSquare, Smile, Menu, X, Trash2, Users } from 'lucide-react';
 import AgentCard from '../components/AgentCard';
 import ChatMessage from '../components/ChatMessage';
 import UsagePanel from '../components/UsagePanel';
+import CalendarPanel from '../components/CalendarPanel';
 
 function Dashboard({ socket, token, onLogout }) {
   const [agents, setAgents] = useState([]);
@@ -13,6 +14,7 @@ function Dashboard({ socket, token, onLogout }) {
   const [typing, setTyping] = useState({});
   const [usage, setUsage] = useState({ today: { tokens_in: 0, tokens_out: 0, cost: 0 }, total: { tokens_in: 0, tokens_out: 0, cost: 0 } });
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [consulting, setConsulting] = useState(null); // Which agent is being consulted
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -35,6 +37,7 @@ function Dashboard({ socket, token, onLogout }) {
     socket.on('new_message', (message) => {
       if (message.chat_id === activeChat?.id) {
         setMessages(prev => [...prev, message]);
+        setConsulting(null); // Clear consulting state when message arrives
       }
       updateChatTimestamp(message.chat_id);
     });
@@ -49,10 +52,17 @@ function Dashboard({ socket, token, onLogout }) {
       fetchUsage();
     });
 
+    socket.on('agent_consulting', ({ chat_id, agent_id, consulting: consultingAgent }) => {
+      if (chat_id === activeChat?.id) {
+        setConsulting(consultingAgent);
+      }
+    });
+
     return () => {
       socket.off('new_message');
       socket.off('agent_typing');
       socket.off('usage_update');
+      socket.off('agent_consulting');
     };
   }, [socket, activeChat]);
 
@@ -241,6 +251,11 @@ function Dashboard({ socket, token, onLogout }) {
           </div>
         </div>
 
+        {/* Calendar Panel */}
+        <div className="p-2 border-t border-dark-600">
+          <CalendarPanel token={token} socket={socket} />
+        </div>
+
         {/* Usage Panel */}
         <UsagePanel usage={usage} />
       </div>
@@ -283,10 +298,17 @@ function Dashboard({ socket, token, onLogout }) {
                   {messages.map((msg, i) => (
                     <ChatMessage key={i} message={msg} agent={activeChatAgent} />
                   ))}
-                  {typing[activeChat.agent_id] && (
+                  {(typing[activeChat.agent_id] || consulting) && (
                     <div className="flex items-center gap-2 text-gray-400 py-2">
                       <span className="text-xl">{activeChatAgent?.icon}</span>
-                      <span className="text-sm">typing...</span>
+                      {consulting ? (
+                        <>
+                          <Users className="w-4 h-4 text-gold animate-pulse" />
+                          <span className="text-sm">consulting {consulting.replace('flint-', 'Flint-')}...</span>
+                        </>
+                      ) : (
+                        <span className="text-sm">typing...</span>
+                      )}
                       <span className="flex gap-1">
                         <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
                         <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
