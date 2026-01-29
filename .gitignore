@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Database files
+database/*.db
+
+# Environment variables
+.env
+
+# Build output (optional - uncomment if you don't want to track builds)
+# dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
