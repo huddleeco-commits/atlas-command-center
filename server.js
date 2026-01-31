@@ -1299,14 +1299,71 @@ async function generateMorningBriefing() {
     FROM api_usage WHERE date = date('now', '-1 day')
   `).get();
 
-  let content = `<h2>☀️ Good Morning, Founder!</h2>`;
-  content += `<p style="color: #666;">Today is ${today}</p>`;
+  // NEW: Get system health
+  const health = await getSystemHealth();
 
-  // Overnight Activity
-  if (recentActivity.length > 0) {
-    content += `<h3>🌙 Overnight Activity</h3><ul>`;
-    recentActivity.slice(0, 5).forEach(a => {
-      content += `<li><strong>[${a.type}]</strong> ${a.action}</li>`;
+  // NEW: Get pending/failed Ralph tasks from yesterday
+  const pendingRalphTasks = db.prepare(`
+    SELECT * FROM ralph_tasks
+    WHERE status IN ('pending', 'failed', 'in_progress')
+    AND created_at < datetime('now', '-12 hours')
+    ORDER BY created_at DESC LIMIT 5
+  `).all();
+
+  // NEW: Get yesterday's agent usage breakdown
+  const yesterdayAgentUsage = db.prepare(`
+    SELECT agent, COUNT(*) as calls, SUM(cost) as cost
+    FROM api_calls
+    WHERE date(timestamp) = date('now', '-1 day')
+    GROUP BY agent
+    ORDER BY calls DESC
+    LIMIT 5
+  `).all();
+
+  // NEW: Get yesterday's conversation count
+  const yesterdayConversations = db.prepare(`
+    SELECT COUNT(DISTINCT chat_id) as chats, COUNT(*) as messages
+    FROM messages
+    WHERE date(created_at) = date('now', '-1 day')
+  `).get();
+
+  // NEW: Generate dynamic greeting based on activity
+  let greeting = '☀️ Good Morning, Founder!';
+  let subtitle = '';
+  if (recentActivity.length === 0 && !yesterdayCost?.cost) {
+    subtitle = 'Quiet night - systems running smoothly.';
+  } else if (recentActivity.length > 5) {
+    subtitle = `Busy overnight! ${recentActivity.length} events recorded.`;
+  } else if (pendingRalphTasks.length > 0) {
+    subtitle = `${pendingRalphTasks.length} task(s) need your attention.`;
+  } else {
+    subtitle = 'Ready to tackle the day.';
+  }
+
+  let content = `<h2>${greeting}</h2>`;
+  content += `<p style="color: #666;">Today is ${today}</p>`;
+  content += `<p style="color: #888; font-style: italic;">${subtitle}</p>`;
+
+  // NEW: System Health Status
+  content += `<h3>🖥️ System Health</h3>`;
+  const healthIcon = health.status === 'healthy' ? '🟢' : health.status === 'degraded' ? '🟡' : '🔴';
+  content += `<p>${healthIcon} <strong>${health.status?.toUpperCase() || 'UNKNOWN'}</strong></p>`;
+  content += `<ul>`;
+  content += `<li>Server: ${health.server || 'N/A'}</li>`;
+  content += `<li>Database: ${health.database?.status || 'N/A'} (${health.database?.chats || 0} chats, ${health.database?.messages || 0} messages)</li>`;
+  content += `<li>Agents: ${health.agents?.total || 0} configured, ${health.agents?.online || 0} online</li>`;
+  if (health.ralph) {
+    content += `<li>Ralph Worker: ${health.ralph.connected ? '🟢 Connected' : '🔴 Disconnected'}</li>`;
+  }
+  content += `</ul>`;
+
+  // NEW: Pending/Failed Tasks needing attention
+  if (pendingRalphTasks.length > 0) {
+    content += `<h3>⚠️ Tasks Needing Attention</h3><ul>`;
+    pendingRalphTasks.forEach(t => {
+      const icon = t.status === 'failed' ? '❌' : '🔄';
+      const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / (1000 * 60 * 60));
+      content += `<li>${icon} <strong>${t.project}</strong>: ${t.task?.slice(0, 40) || t.branch_name} <span style="color: #888;">(${age}h ago)</span></li>`;
     });
     content += `</ul>`;
   }
@@ -1318,16 +1375,57 @@ async function generateMorningBriefing() {
       content += `<li><strong>${e.event_time || 'All day'}</strong> - ${e.title}</li>`;
     });
     content += `</ul>`;
+  } else {
+    content += `<h3>📅 Today's Schedule</h3><p style="color: #888;">No events scheduled - open day for deep work.</p>`;
   }
 
-  // Platform Status
-  content += `<h3>🚀 Platform Status</h3><ul>`;
+  // Upcoming (next 3 days)
+  if (upcomingEvents.length > 0) {
+    content += `<h3>📆 Coming Up (Next 3 Days)</h3><ul>`;
+    upcomingEvents.slice(0, 5).forEach(e => {
+      const dateStr = formatCentralTime(e.event_date, { weekday: 'short', month: 'short', day: 'numeric' });
+      content += `<li><strong>${dateStr}</strong> ${e.event_time || ''} - ${e.title}</li>`;
+    });
+    content += `</ul>`;
+  }
+
+  // Overnight Activity
+  if (recentActivity.length > 0) {
+    content += `<h3>🌙 Overnight Activity</h3><ul>`;
+    recentActivity.slice(0, 5).forEach(a => {
+      content += `<li><strong>[${a.type}]</strong> ${a.action}</li>`;
+    });
+    content += `</ul>`;
+  }
+
+  // Platform Status with more detail
+  content += `<h3>🚀 Platform Status</h3>`;
+  let hasProjectActivity = false;
   for (const [proj, status] of Object.entries(projectStatus)) {
     if (status.recentCommits?.length > 0) {
-      content += `<li><strong>${proj}</strong>: ${status.currentBranch} - ${status.recentCommits[0]}</li>`;
+      hasProjectActivity = true;
+      content += `<p><strong>${proj}</strong> (${status.currentBranch || 'main'})</p><ul>`;
+      status.recentCommits.slice(0, 2).forEach(c => {
+        content += `<li style="color: #666;">${c}</li>`;
+      });
+      content += `</ul>`;
     }
   }
-  content += `</ul>`;
+  if (!hasProjectActivity) {
+    content += `<p style="color: #888;">No recent commits across projects.</p>`;
+  }
+
+  // NEW: Yesterday's Agent Usage
+  if (yesterdayAgentUsage.length > 0) {
+    content += `<h3>🤖 Yesterday's Agent Activity</h3>`;
+    content += `<p>${yesterdayConversations?.chats || 0} conversations, ${yesterdayConversations?.messages || 0} messages</p>`;
+    content += `<table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
+    content += `<tr style="background: #f5f5f5;"><th style="padding: 5px; text-align: left;">Agent</th><th style="padding: 5px;">Calls</th><th style="padding: 5px;">Cost</th></tr>`;
+    yesterdayAgentUsage.forEach(a => {
+      content += `<tr><td style="padding: 5px;">${a.agent}</td><td style="padding: 5px; text-align: center;">${a.calls}</td><td style="padding: 5px; text-align: right;">$${(a.cost || 0).toFixed(4)}</td></tr>`;
+    });
+    content += `</table>`;
+  }
 
   // Top Priorities (from recent decisions)
   if (decisions.length > 0) {
@@ -1338,13 +1436,15 @@ async function generateMorningBriefing() {
     content += `</ul>`;
   }
 
-  // Yesterday's Costs
+  // Yesterday's Costs Summary
+  content += `<h3>💰 Yesterday's API Usage</h3>`;
   if (yesterdayCost?.cost) {
-    content += `<h3>💰 Yesterday's API Usage</h3>`;
-    content += `<p>$${yesterdayCost.cost.toFixed(4)} (${yesterdayCost.tokens?.toLocaleString() || 0} tokens)</p>`;
+    content += `<p><strong>$${yesterdayCost.cost.toFixed(4)}</strong> (${yesterdayCost.tokens?.toLocaleString() || 0} tokens)</p>`;
+  } else {
+    content += `<p style="color: #888;">No API usage recorded yesterday.</p>`;
   }
 
-  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS</p>`;
+  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS at ${formatCentralTime(new Date(), { hour: 'numeric', minute: '2-digit' })}</p>`;
 
   return content;
 }
@@ -1380,52 +1480,179 @@ async function generateEveningSummary() {
     ORDER BY event_time ASC
   `).all();
 
-  let content = `<h2>🌙 Good Evening, Founder!</h2>`;
-  content += `<p style="color: #666;">${today} Summary</p>`;
+  // NEW: Get today's agent usage with details
+  const todayAgentUsage = db.prepare(`
+    SELECT agent, COUNT(*) as calls, SUM(cost) as cost, SUM(tokens_in + tokens_out) as tokens
+    FROM api_calls
+    WHERE date(timestamp) = date('now')
+    GROUP BY agent
+    ORDER BY calls DESC
+  `).all();
 
-  // Day's Accomplishments
-  content += `<h3>✅ Today's Activity (${todayActivity.length} events)</h3>`;
-  if (todayActivity.length > 0) {
-    content += `<ul>`;
-    const grouped = {};
-    todayActivity.forEach(a => {
-      grouped[a.type] = (grouped[a.type] || 0) + 1;
-    });
-    for (const [type, count] of Object.entries(grouped)) {
-      content += `<li><strong>${type}</strong>: ${count} events</li>`;
-    }
-    content += `</ul>`;
+  // NEW: Get today's conversation count and unique chats
+  const todayConversations = db.prepare(`
+    SELECT COUNT(DISTINCT chat_id) as chats, COUNT(*) as messages
+    FROM messages
+    WHERE date(created_at) = date('now')
+  `).get();
+
+  // NEW: Get today's Wiki pages created
+  const todayWikiPages = await getRecentWikiDecisions(5);
+  const todayDecisions = todayWikiPages.filter(d => {
+    // Check if created today (approximate - Wiki API may not give exact timestamps)
+    return d.createdAt && new Date(d.createdAt).toDateString() === new Date().toDateString();
+  });
+
+  // NEW: Get pending tasks that need follow-up
+  const pendingTasks = db.prepare(`
+    SELECT * FROM ralph_tasks
+    WHERE status IN ('pending', 'in_progress')
+    ORDER BY created_at DESC LIMIT 5
+  `).all();
+
+  // NEW: Get week's running cost total for comparison
+  const weekCost = db.prepare(`
+    SELECT SUM(cost) as cost FROM api_usage WHERE date >= date('now', '-7 days')
+  `).get();
+
+  // NEW: Get commits made today across projects
+  const projects = ['slabtrack', 'blink', 'command-center'];
+  const todayCommits = [];
+  for (const proj of projects) {
+    try {
+      const status = getProjectStatus(proj);
+      if (status.recentCommits?.length > 0) {
+        // Check if any commits are from today (heuristic based on commit message recency)
+        status.recentCommits.slice(0, 3).forEach(c => {
+          todayCommits.push({ project: proj, commit: c });
+        });
+      }
+    } catch (e) { /* ignore */ }
   }
 
-  // Ralph Tasks
+  // Dynamic greeting based on productivity
+  let greeting = '🌙 Good Evening, Founder!';
+  let subtitle = '';
+  const completedRalph = ralphTasks.filter(t => t.status === 'completed').length;
+  const failedRalph = ralphTasks.filter(t => t.status === 'failed').length;
+
+  if (completedRalph >= 3) {
+    subtitle = `Productive day! ${completedRalph} tasks completed.`;
+  } else if (todayActivity.length > 10) {
+    subtitle = `Busy day with ${todayActivity.length} activities logged.`;
+  } else if (failedRalph > 0) {
+    subtitle = `${failedRalph} task(s) failed - may need review.`;
+  } else if (todayConversations?.chats > 5) {
+    subtitle = `${todayConversations.chats} conversations across agents.`;
+  } else {
+    subtitle = 'Day complete. Time to recharge.';
+  }
+
+  let content = `<h2>${greeting}</h2>`;
+  content += `<p style="color: #666;">${today} Summary</p>`;
+  content += `<p style="color: #888; font-style: italic;">${subtitle}</p>`;
+
+  // NEW: Quick Stats Dashboard
+  content += `<h3>📊 Today at a Glance</h3>`;
+  content += `<table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">`;
+  content += `<tr>`;
+  content += `<td style="text-align: center; padding: 10px; background: #f0f7ff; border-radius: 8px;">`;
+  content += `<div style="font-size: 24px; font-weight: bold; color: #2563eb;">${todayConversations?.chats || 0}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Conversations</div></td>`;
+  content += `<td style="text-align: center; padding: 10px; background: #f0fdf4; border-radius: 8px;">`;
+  content += `<div style="font-size: 24px; font-weight: bold; color: #16a34a;">${completedRalph}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Tasks Done</div></td>`;
+  content += `<td style="text-align: center; padding: 10px; background: #fefce8; border-radius: 8px;">`;
+  content += `<div style="font-size: 24px; font-weight: bold; color: #ca8a04;">$${(todayCost?.cost || 0).toFixed(2)}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">API Cost</div></td>`;
+  content += `<td style="text-align: center; padding: 10px; background: #fdf2f8; border-radius: 8px;">`;
+  content += `<div style="font-size: 24px; font-weight: bold; color: #db2777;">${todayActivity.length}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Activities</div></td>`;
+  content += `</tr></table>`;
+
+  // NEW: Agent Usage Breakdown
+  if (todayAgentUsage.length > 0) {
+    content += `<h3>🤖 Agent Conversations</h3>`;
+    content += `<table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
+    content += `<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Agent</th><th style="padding: 8px; text-align: center;">Calls</th><th style="padding: 8px; text-align: right;">Cost</th></tr>`;
+    todayAgentUsage.forEach(a => {
+      const agentIcon = a.agent === 'prime' ? '👔' : a.agent?.includes('flint') ? '🔧' : a.agent === 'ralph' ? '🔨' : '🤖';
+      content += `<tr><td style="padding: 8px;">${agentIcon} ${a.agent}</td><td style="padding: 8px; text-align: center;">${a.calls}</td><td style="padding: 8px; text-align: right;">$${(a.cost || 0).toFixed(4)}</td></tr>`;
+    });
+    content += `</table>`;
+  }
+
+  // Ralph Tasks with more detail
   if (ralphTasks.length > 0) {
-    content += `<h3>🔨 Ralph Tasks</h3><ul>`;
+    content += `<h3>🔨 Ralph Development Tasks</h3><ul>`;
     ralphTasks.forEach(t => {
       const status = t.status === 'completed' ? '✅' : t.status === 'failed' ? '❌' : '🔄';
-      content += `<li>${status} <strong>${t.project}</strong>: ${t.task?.slice(0, 50) || t.branch_name}</li>`;
+      const duration = t.completed_at && t.created_at ?
+        Math.round((new Date(t.completed_at) - new Date(t.created_at)) / (1000 * 60)) + ' min' : '';
+      content += `<li>${status} <strong>${t.project}</strong>: ${t.task?.slice(0, 50) || t.branch_name}`;
+      if (duration) content += ` <span style="color: #888;">(${duration})</span>`;
+      content += `</li>`;
     });
     content += `</ul>`;
   }
 
-  // API Costs
-  content += `<h3>💰 Today's API Costs</h3>`;
+  // NEW: Today's Code Changes
+  if (todayCommits.length > 0) {
+    content += `<h3>💻 Recent Code Changes</h3><ul>`;
+    todayCommits.slice(0, 5).forEach(c => {
+      content += `<li><strong>${c.project}</strong>: ${c.commit}</li>`;
+    });
+    content += `</ul>`;
+  }
+
+  // NEW: Decisions Made Today
+  if (todayDecisions.length > 0) {
+    content += `<h3>📋 Decisions Documented</h3><ul>`;
+    todayDecisions.forEach(d => {
+      content += `<li><strong>${d.title}</strong></li>`;
+    });
+    content += `</ul>`;
+  }
+
+  // NEW: Pending Items
+  if (pendingTasks.length > 0) {
+    content += `<h3>⏳ Pending Tasks</h3><ul>`;
+    pendingTasks.forEach(t => {
+      const age = Math.round((Date.now() - new Date(t.created_at).getTime()) / (1000 * 60 * 60));
+      content += `<li><strong>${t.project}</strong>: ${t.task?.slice(0, 40) || 'In progress'} <span style="color: #888;">(${age}h)</span></li>`;
+    });
+    content += `</ul>`;
+  }
+
+  // API Costs with comparison
+  content += `<h3>💰 Today's API Usage</h3>`;
   if (todayCost?.cost) {
     content += `<p><strong>$${todayCost.cost.toFixed(4)}</strong></p>`;
     content += `<p>Input: ${todayCost.tokens_in?.toLocaleString() || 0} tokens | Output: ${todayCost.tokens_out?.toLocaleString() || 0} tokens</p>`;
+    if (weekCost?.cost) {
+      const weeklyAvg = weekCost.cost / 7;
+      const comparison = todayCost.cost > weeklyAvg ?
+        `📈 ${((todayCost.cost / weeklyAvg - 1) * 100).toFixed(0)}% above weekly avg` :
+        `📉 ${((1 - todayCost.cost / weeklyAvg) * 100).toFixed(0)}% below weekly avg`;
+      content += `<p style="color: #888; font-size: 12px;">${comparison} ($${weeklyAvg.toFixed(4)}/day)</p>`;
+    }
   } else {
-    content += `<p>No API usage recorded today</p>`;
+    content += `<p style="color: #888;">No API usage recorded today.</p>`;
   }
 
   // Tomorrow's Focus
+  content += `<h3>📅 Tomorrow's Schedule</h3>`;
   if (tomorrowEvents.length > 0) {
-    content += `<h3>📅 Tomorrow's Schedule</h3><ul>`;
+    content += `<ul>`;
     tomorrowEvents.forEach(e => {
       content += `<li><strong>${e.event_time || 'All day'}</strong> - ${e.title}</li>`;
     });
     content += `</ul>`;
+  } else {
+    content += `<p style="color: #888;">No events scheduled - clear day ahead.</p>`;
   }
 
-  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS</p>`;
+  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS at ${formatCentralTime(new Date(), { hour: 'numeric', minute: '2-digit' })}</p>`;
 
   return content;
 }
@@ -1435,8 +1662,9 @@ async function generateWeeklyReview() {
   const weekStart = new Date();
   weekStart.setDate(weekStart.getDate() - 7);
   const weekLabel = formatCentralTime(weekStart, { month: 'long', day: 'numeric' });
+  const weekEnd = formatCentralTime(new Date(), { month: 'long', day: 'numeric' });
 
-  // Get week's API costs
+  // Get week's API costs by day
   const weekCost = db.prepare(`
     SELECT date, SUM(cost) as cost, SUM(tokens_in + tokens_out) as tokens
     FROM api_usage
@@ -1447,6 +1675,12 @@ async function generateWeeklyReview() {
 
   const totalCost = weekCost.reduce((sum, d) => sum + (d.cost || 0), 0);
 
+  // Get previous week's cost for comparison
+  const prevWeekCost = db.prepare(`
+    SELECT SUM(cost) as cost FROM api_usage
+    WHERE date >= date('now', '-14 days') AND date < date('now', '-7 days')
+  `).get();
+
   // Get week's activity by type
   const weekActivity = db.prepare(`
     SELECT type, COUNT(*) as count
@@ -1456,6 +1690,8 @@ async function generateWeeklyReview() {
     ORDER BY count DESC
   `).all();
 
+  const totalActivity = weekActivity.reduce((sum, a) => sum + a.count, 0);
+
   // Get week's Ralph tasks
   const weekRalph = db.prepare(`
     SELECT project, status, COUNT(*) as count
@@ -1463,6 +1699,37 @@ async function generateWeeklyReview() {
     WHERE created_at >= datetime('now', '-7 days')
     GROUP BY project, status
   `).all();
+
+  // Get week's Ralph summary
+  const ralphCompleted = weekRalph.filter(r => r.status === 'completed').reduce((sum, r) => sum + r.count, 0);
+  const ralphFailed = weekRalph.filter(r => r.status === 'failed').reduce((sum, r) => sum + r.count, 0);
+  const ralphTotal = weekRalph.reduce((sum, r) => sum + r.count, 0);
+
+  // Get week's agent usage
+  const weekAgentUsage = db.prepare(`
+    SELECT agent, COUNT(*) as calls, SUM(cost) as cost
+    FROM api_calls
+    WHERE date(timestamp) >= date('now', '-7 days')
+    GROUP BY agent
+    ORDER BY calls DESC
+  `).all();
+
+  // Get week's conversation stats
+  const weekConversations = db.prepare(`
+    SELECT COUNT(DISTINCT chat_id) as chats, COUNT(*) as messages
+    FROM messages
+    WHERE date(created_at) >= date('now', '-7 days')
+  `).get();
+
+  // Get busiest day
+  const busiestDay = db.prepare(`
+    SELECT date(created_at) as date, COUNT(*) as count
+    FROM activity_feed
+    WHERE created_at >= datetime('now', '-7 days')
+    GROUP BY date(created_at)
+    ORDER BY count DESC
+    LIMIT 1
+  `).get();
 
   // Get all decisions
   const decisions = await getRecentWikiDecisions(10);
@@ -1474,57 +1741,153 @@ async function generateWeeklyReview() {
     ORDER BY event_date ASC, event_time ASC
   `).all();
 
-  let content = `<h2>📊 Weekly Review</h2>`;
-  content += `<p style="color: #666;">Week of ${weekLabel}</p>`;
+  // Get project commits this week
+  const projects = ['slabtrack', 'blink', 'command-center'];
+  const projectCommits = {};
+  for (const proj of projects) {
+    try {
+      const status = getProjectStatus(proj);
+      projectCommits[proj] = status.recentCommits?.length || 0;
+    } catch (e) { /* ignore */ }
+  }
 
-  // API Costs Summary
-  content += `<h3>💰 Weekly API Costs: $${totalCost.toFixed(4)}</h3>`;
-  if (weekCost.length > 0) {
-    content += `<table border="1" cellpadding="5" style="border-collapse: collapse;">`;
-    content += `<tr><th>Date</th><th>Cost</th><th>Tokens</th></tr>`;
-    weekCost.forEach(d => {
-      content += `<tr><td>${d.date}</td><td>$${d.cost?.toFixed(4) || '0.00'}</td><td>${d.tokens?.toLocaleString() || 0}</td></tr>`;
+  // Dynamic intro
+  let weekSummary = '';
+  if (ralphCompleted >= 10) {
+    weekSummary = `Exceptional week with ${ralphCompleted} development tasks completed!`;
+  } else if (totalActivity > 50) {
+    weekSummary = `High-activity week with ${totalActivity} events across all systems.`;
+  } else if (totalCost > (prevWeekCost?.cost || 0) * 1.5) {
+    weekSummary = 'Increased AI usage this week - lots of strategic discussions.';
+  } else {
+    weekSummary = 'Steady progress across all projects.';
+  }
+
+  let content = `<h2>📊 Weekly Review</h2>`;
+  content += `<p style="color: #666;">Week of ${weekLabel} - ${weekEnd}</p>`;
+  content += `<p style="color: #888; font-style: italic;">${weekSummary}</p>`;
+
+  // Week at a Glance - Stats Dashboard
+  content += `<h3>📈 Week at a Glance</h3>`;
+  content += `<table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">`;
+  content += `<tr>`;
+  content += `<td style="text-align: center; padding: 15px; background: #f0f7ff; border-radius: 8px;">`;
+  content += `<div style="font-size: 28px; font-weight: bold; color: #2563eb;">${weekConversations?.chats || 0}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Conversations</div></td>`;
+  content += `<td style="text-align: center; padding: 15px; background: #f0fdf4; border-radius: 8px;">`;
+  content += `<div style="font-size: 28px; font-weight: bold; color: #16a34a;">${ralphCompleted}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Tasks Done</div></td>`;
+  content += `<td style="text-align: center; padding: 15px; background: #fefce8; border-radius: 8px;">`;
+  content += `<div style="font-size: 28px; font-weight: bold; color: #ca8a04;">$${totalCost.toFixed(2)}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">API Spend</div></td>`;
+  content += `<td style="text-align: center; padding: 15px; background: #fdf2f8; border-radius: 8px;">`;
+  content += `<div style="font-size: 28px; font-weight: bold; color: #db2777;">${totalActivity}</div>`;
+  content += `<div style="font-size: 12px; color: #666;">Activities</div></td>`;
+  content += `</tr></table>`;
+
+  // Cost Comparison
+  if (prevWeekCost?.cost) {
+    const costChange = ((totalCost / prevWeekCost.cost) - 1) * 100;
+    const changeIcon = costChange > 0 ? '📈' : '📉';
+    const changeColor = costChange > 20 ? '#dc2626' : costChange < -20 ? '#16a34a' : '#888';
+    content += `<p style="color: ${changeColor};">${changeIcon} ${costChange > 0 ? '+' : ''}${costChange.toFixed(1)}% vs previous week ($${prevWeekCost.cost.toFixed(2)})</p>`;
+  }
+
+  // Agent Usage Ranking
+  if (weekAgentUsage.length > 0) {
+    content += `<h3>🤖 Agent Leaderboard</h3>`;
+    content += `<table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
+    content += `<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Agent</th><th style="padding: 8px; text-align: center;">Calls</th><th style="padding: 8px; text-align: right;">Cost</th><th style="padding: 8px; text-align: right;">% of Total</th></tr>`;
+    weekAgentUsage.slice(0, 8).forEach((a, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '';
+      const pct = totalCost > 0 ? ((a.cost || 0) / totalCost * 100).toFixed(1) : '0';
+      content += `<tr><td style="padding: 8px;">${medal} ${a.agent}</td><td style="padding: 8px; text-align: center;">${a.calls}</td><td style="padding: 8px; text-align: right;">$${(a.cost || 0).toFixed(4)}</td><td style="padding: 8px; text-align: right;">${pct}%</td></tr>`;
     });
     content += `</table>`;
   }
 
-  // Activity Summary
-  content += `<h3>📈 Activity Summary</h3><ul>`;
-  weekActivity.forEach(a => {
-    content += `<li><strong>${a.type}</strong>: ${a.count} events</li>`;
-  });
+  // Daily Cost Breakdown
+  content += `<h3>💰 Daily API Costs</h3>`;
+  if (weekCost.length > 0) {
+    content += `<table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
+    content += `<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Date</th><th style="padding: 8px; text-align: right;">Cost</th><th style="padding: 8px; text-align: right;">Tokens</th></tr>`;
+    weekCost.forEach(d => {
+      const dayName = formatCentralTime(d.date, { weekday: 'short' });
+      content += `<tr><td style="padding: 8px;">${dayName} ${d.date}</td><td style="padding: 8px; text-align: right;">$${d.cost?.toFixed(4) || '0.00'}</td><td style="padding: 8px; text-align: right;">${d.tokens?.toLocaleString() || 0}</td></tr>`;
+    });
+    content += `</table>`;
+  }
+
+  // Project Development Summary
+  content += `<h3>💻 Development Summary</h3>`;
+  const totalCommits = Object.values(projectCommits).reduce((sum, c) => sum + c, 0);
+  content += `<p>${totalCommits} commits across ${Object.keys(projectCommits).length} projects</p>`;
+  content += `<ul>`;
+  for (const [proj, commits] of Object.entries(projectCommits)) {
+    if (commits > 0) {
+      content += `<li><strong>${proj}</strong>: ${commits} recent commits</li>`;
+    }
+  }
   content += `</ul>`;
 
-  // Ralph Summary
-  if (weekRalph.length > 0) {
-    content += `<h3>🔨 Ralph Tasks</h3><ul>`;
+  // Ralph Development Tasks
+  if (ralphTotal > 0) {
+    content += `<h3>🔨 Ralph Development Tasks</h3>`;
+    content += `<p>Total: ${ralphTotal} tasks | ✅ ${ralphCompleted} completed | ❌ ${ralphFailed} failed</p>`;
+
+    // Group by project
+    const byProject = {};
     weekRalph.forEach(r => {
-      const status = r.status === 'completed' ? '✅' : r.status === 'failed' ? '❌' : '🔄';
-      content += `<li>${status} <strong>${r.project}</strong>: ${r.count} tasks (${r.status})</li>`;
+      if (!byProject[r.project]) byProject[r.project] = { completed: 0, failed: 0, pending: 0 };
+      byProject[r.project][r.status] = r.count;
+    });
+
+    content += `<table style="width: 100%; border-collapse: collapse; font-size: 14px;">`;
+    content += `<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Project</th><th style="padding: 8px; text-align: center;">✅</th><th style="padding: 8px; text-align: center;">❌</th><th style="padding: 8px; text-align: center;">🔄</th></tr>`;
+    for (const [proj, stats] of Object.entries(byProject)) {
+      content += `<tr><td style="padding: 8px;">${proj}</td><td style="padding: 8px; text-align: center;">${stats.completed || 0}</td><td style="padding: 8px; text-align: center;">${stats.failed || 0}</td><td style="padding: 8px; text-align: center;">${stats.pending || stats.in_progress || 0}</td></tr>`;
+    }
+    content += `</table>`;
+  }
+
+  // Activity Breakdown
+  if (weekActivity.length > 0) {
+    content += `<h3>📊 Activity Breakdown</h3>`;
+    content += `<ul>`;
+    weekActivity.forEach(a => {
+      const pct = ((a.count / totalActivity) * 100).toFixed(0);
+      content += `<li><strong>${a.type}</strong>: ${a.count} (${pct}%)</li>`;
     });
     content += `</ul>`;
+    if (busiestDay) {
+      const dayName = formatCentralTime(busiestDay.date, { weekday: 'long', month: 'short', day: 'numeric' });
+      content += `<p style="color: #888;">Busiest day: ${dayName} with ${busiestDay.count} events</p>`;
+    }
   }
 
   // Boardroom Decisions
   if (decisions.length > 0) {
-    content += `<h3>📋 Recent Boardroom Decisions</h3><ul>`;
+    content += `<h3>📋 Strategic Decisions</h3><ul>`;
     decisions.slice(0, 5).forEach(d => {
-      content += `<li><strong>${d.title}</strong></li>`;
+      content += `<li><strong>${d.title}</strong>${d.description ? ': ' + d.description.slice(0, 60) + '...' : ''}</li>`;
     });
     content += `</ul>`;
   }
 
-  // Next Week
+  // Next Week Preview
+  content += `<h3>📅 Looking Ahead</h3>`;
   if (nextWeekEvents.length > 0) {
-    content += `<h3>📅 Next Week</h3><ul>`;
+    content += `<ul>`;
     nextWeekEvents.forEach(e => {
       const dateStr = formatCentralTime(e.event_date, { weekday: 'short', month: 'short', day: 'numeric' });
-      content += `<li><strong>${dateStr}</strong> - ${e.title}</li>`;
+      content += `<li><strong>${dateStr}</strong> ${e.event_time || ''} - ${e.title}</li>`;
     });
     content += `</ul>`;
+  } else {
+    content += `<p style="color: #888;">No scheduled events - week open for focused work.</p>`;
   }
 
-  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS</p>`;
+  content += `<hr><p style="color: #888; font-size: 12px;">Generated by ATLAS at ${formatCentralTime(new Date(), { hour: 'numeric', minute: '2-digit' })} CT</p>`;
 
   return content;
 }
