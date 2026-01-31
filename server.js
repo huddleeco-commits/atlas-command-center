@@ -4276,6 +4276,71 @@ io.on('connection', (socket) => {
     }
   });
 
+  // ==================== SUPPLIER WORKER HANDLING ====================
+  const supplierWorkers = new Map();
+
+  socket.on('supplier:worker:register', (data) => {
+    console.log(`[Supplier] Worker registered: ${data.hostname} (watching: ${data.watchFolder})`);
+    supplierWorkers.set(socket.id, {
+      socket,
+      hostname: data.hostname,
+      workerName: data.workerName,
+      watchFolder: data.watchFolder,
+      webhookPort: data.webhookPort,
+      connectedAt: Date.now()
+    });
+    logActivity('supplier', 'system', 'Supplier Worker connected', data.hostname);
+  });
+
+  socket.on('supplier:log', (data) => {
+    console.log(`[Supplier] [${data.level}] ${data.message}`, data.data || '');
+  });
+
+  socket.on('supplier:card_detected', (data) => {
+    console.log(`[Supplier] Card detected: ${data.cardData?.player || 'Unknown'}`);
+    io.emit('supplier:card_detected', data);
+    logActivity('supplier', 'supplier', `Card detected: ${data.cardData?.player}`, data.cardData?.set_name);
+  });
+
+  socket.on('supplier:identification_approved', (data) => {
+    console.log(`[Supplier] Identification approved: ${data.cardData?.player}`);
+    io.emit('supplier:identification_approved', data);
+    logActivity('supplier', 'user', `Card ID approved: ${data.cardData?.player}`, 'Researching pricing...');
+  });
+
+  socket.on('supplier:identification_rejected', (data) => {
+    console.log(`[Supplier] Identification rejected: ${data.cardData?.player}`);
+    io.emit('supplier:identification_rejected', data);
+    logActivity('supplier', 'user', `Card ID rejected: ${data.cardData?.player}`, 'Skipped');
+  });
+
+  socket.on('supplier:card_imported', (data) => {
+    console.log(`[Supplier] Card imported to SlabTrack: ID ${data.cardId}`);
+    io.emit('supplier:card_imported', data);
+    logActivity('supplier', 'supplier', `Card imported: ${data.cardData?.player}`, `SlabTrack ID: ${data.cardId}`);
+  });
+
+  socket.on('supplier:pricing_rejected', (data) => {
+    console.log(`[Supplier] Pricing rejected: ${data.cardData?.player}`);
+    io.emit('supplier:pricing_rejected', data);
+    logActivity('supplier', 'user', `Pricing rejected: ${data.cardData?.player}`, 'Not imported');
+  });
+
+  socket.on('supplier:error', (data) => {
+    console.error(`[Supplier] Error: ${data.message}`);
+    io.emit('supplier:error', data);
+  });
+
+  // Handle supplier worker disconnect
+  socket.on('disconnect', () => {
+    if (supplierWorkers.has(socket.id)) {
+      const worker = supplierWorkers.get(socket.id);
+      console.log(`[Supplier] Worker disconnected: ${worker.hostname}`);
+      supplierWorkers.delete(socket.id);
+      logActivity('supplier', 'system', 'Supplier Worker disconnected', worker.hostname);
+    }
+  });
+
   // ==================== RALPH WORKER HANDLING ====================
   // Workers connect with auth.workerType === 'ralph'
   socket.on('ralph:worker:register', (data) => {
