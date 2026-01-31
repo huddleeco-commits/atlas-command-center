@@ -130,6 +130,14 @@ db.exec(`
     data TEXT NOT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS git_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    last_sync DATETIME DEFAULT CURRENT_TIMESTAMP,
+    commits_found INTEGER DEFAULT 0,
+    sync_data TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Migration: Add call_type column to api_calls if it doesn't exist
@@ -2859,6 +2867,111 @@ app.get('/api/git/:project/status', authMiddleware, (req, res) => {
   const { project } = req.params;
   const result = getProjectStatus(project);
   res.json(result);
+});
+
+// ==================== GIT SYNC API ====================
+
+// Get commits since a specific date for a project
+function getCommitsSince(project, sinceDate) {
+  const projectConfig = RALPH_PROJECTS[project];
+  if (!projectConfig) return { success: false, error: `Unknown project: ${project}` };
+
+  try {
+    const since = sinceDate ? `--since="${sinceDate}"` : '-10';
+    const result = execSync(`git log ${since} --pretty=format:"%h|%s|%cr|%an" --no-merges`, {
+      cwd: projectConfig.path,
+      encoding: 'utf8',
+      timeout: 15000
+    });
+
+    const commits = result.trim().split('\n').filter(l => l).map(line => {
+      const [hash, message, relative, author] = line.split('|');
+      return { hash, message, relative, author };
+    });
+
+    return { success: true, commits, count: commits.length };
+  } catch (error) {
+    if (error.status === 128 || error.message.includes('does not have any commits')) {
+      return { success: true, commits: [], count: 0 };
+    }
+    return { success: false, error: error.message };
+  }
+}
+
+// Get last sync timestamp
+function getLastSync() {
+  try {
+    const row = db.prepare('SELECT last_sync, commits_found, sync_data FROM git_sync ORDER BY id DESC LIMIT 1').get();
+    return row || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Save sync result
+function saveSyncResult(commitsFound, syncData) {
+  db.prepare('INSERT INTO git_sync (last_sync, commits_found, sync_data) VALUES (CURRENT_TIMESTAMP, ?, ?)')
+    .run(commitsFound, JSON.stringify(syncData));
+}
+
+// Sync all projects
+app.get('/api/git/sync', authMiddleware, (req, res) => {
+  const lastSync = getLastSync();
+  const sinceDate = lastSync?.last_sync || null;
+
+  const projects = Object.keys(RALPH_PROJECTS);
+  const results = {};
+  let totalCommits = 0;
+
+  for (const project of projects) {
+    const result = getCommitsSince(project, sinceDate);
+    results[project] = result;
+    if (result.success) {
+      totalCommits += result.count;
+    }
+  }
+
+  // Save sync result
+  saveSyncResult(totalCommits, results);
+
+  // Log activity if commits found
+  if (totalCommits > 0) {
+    const summary = projects.map(p => `${p}: ${results[p]?.count || 0}`).join(', ');
+    logActivity('git', 'system', `Git sync: ${totalCommits} new commits`, summary);
+  }
+
+  res.json({
+    success: true,
+    lastSync: sinceDate,
+    currentSync: new Date().toISOString(),
+    totalCommits,
+    projects: results
+  });
+});
+
+// Get sync status (for checking if auto-sync needed)
+app.get('/api/git/sync/status', authMiddleware, (req, res) => {
+  const lastSync = getLastSync();
+  const now = new Date();
+  const lastSyncDate = lastSync?.last_sync ? new Date(lastSync.last_sync) : null;
+  const hoursSinceSync = lastSyncDate ? (now - lastSyncDate) / (1000 * 60 * 60) : null;
+
+  res.json({
+    lastSync: lastSync?.last_sync || null,
+    lastCommitsFound: lastSync?.commits_found || 0,
+    hoursSinceSync: hoursSinceSync ? Math.round(hoursSinceSync * 10) / 10 : null,
+    needsSync: !lastSyncDate || hoursSinceSync > 1
+  });
+});
+
+// Get sync history
+app.get('/api/git/sync/history', authMiddleware, (req, res) => {
+  const limit = parseInt(req.query.limit) || 10;
+  const rows = db.prepare('SELECT * FROM git_sync ORDER BY id DESC LIMIT ?').all(limit);
+  res.json(rows.map(row => ({
+    ...row,
+    sync_data: row.sync_data ? JSON.parse(row.sync_data) : null
+  })));
 });
 
 // Cancel a specific Ralph task

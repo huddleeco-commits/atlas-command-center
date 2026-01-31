@@ -3,9 +3,12 @@ node_modules/
 
 # Database files
 database/*.db
+*.db
 
 # Environment variables
 .env
+.env.local
+.env.*.local
 
 # Build output (optional - uncomment if you don't want to track builds)
 # dist/
@@ -13,11 +16,22 @@ database/*.db
 # OS files
 .DS_Store
 Thumbs.db
+nul
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # Logs
 *.log
 npm-debug.log*
+pm2-*.log
+
+# Claude Code
+.claude/
+
+# Temp files
+*.tmp
+*.temp

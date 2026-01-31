@@ -4,7 +4,7 @@ import {
   DollarSign, ChevronDown, ChevronRight, BookOpen, ExternalLink,
   Calendar, Settings, Plus, Target, CheckCircle, Circle, AlertTriangle,
   Clock, Activity, TrendingUp, PlayCircle, FileText, Loader2, BarChart2, Wrench,
-  Terminal
+  Terminal, GitBranch, RefreshCw
 } from 'lucide-react';
 import CostsPage from './CostsPage';
 import TerminalPage from './TerminalPage';
@@ -57,6 +57,13 @@ function Dashboard({ socket, token, onLogout }) {
   const [recentActivity, setRecentActivity] = useState([]);
   const [sentryErrors, setSentryErrors] = useState([]);
   const [showRalphVisualizer, setShowRalphVisualizer] = useState(false);
+
+  // Git sync state
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [syncResult, setSyncResult] = useState(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [showSyncModal, setShowSyncModal] = useState(false);
+  const [syncNotification, setSyncNotification] = useState(null);
 
   const messagesEndRef = useRef(null);
 
@@ -215,6 +222,66 @@ function Dashboard({ socket, token, onLogout }) {
     } catch (err) { /* Sentry may not be configured */ }
   };
 
+  // ==================== GIT SYNC ====================
+  const checkSyncStatus = async () => {
+    try {
+      const res = await fetch('/api/git/sync/status', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const status = await res.json();
+        setSyncStatus(status);
+        return status;
+      }
+    } catch (err) { console.error('Failed to check sync status:', err); }
+    return null;
+  };
+
+  const performSync = async (showNotification = true) => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/git/sync', { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const result = await res.json();
+        setSyncResult(result);
+        setSyncStatus({ lastSync: result.currentSync, lastCommitsFound: result.totalCommits, needsSync: false });
+
+        if (showNotification && result.totalCommits > 0) {
+          setSyncNotification({
+            message: `Found ${result.totalCommits} new commits`,
+            details: Object.entries(result.projects)
+              .filter(([_, data]) => data.count > 0)
+              .map(([project, data]) => `${project}: ${data.count}`)
+              .join(', ')
+          });
+          setTimeout(() => setSyncNotification(null), 5000);
+        }
+
+        // Refresh activity feed to show git activity
+        fetchRecentActivity();
+        return result;
+      }
+    } catch (err) {
+      console.error('Failed to sync:', err);
+      setSyncNotification({ message: 'Sync failed', details: err.message, isError: true });
+      setTimeout(() => setSyncNotification(null), 5000);
+    } finally {
+      setIsSyncing(false);
+    }
+    return null;
+  };
+
+  // Auto-sync on dashboard load if needed
+  useEffect(() => {
+    const autoSync = async () => {
+      const status = await checkSyncStatus();
+      if (status?.needsSync) {
+        console.log('[GitSync] Auto-syncing (last sync > 1 hour ago)');
+        performSync(true);
+      }
+    };
+    autoSync();
+  }, []);
+
   // ==================== ACTIONS ====================
   const startNewChat = async (agentId) => {
     const res = await fetch('/api/chats', {
@@ -371,17 +438,111 @@ function Dashboard({ socket, token, onLogout }) {
           ))}
         </nav>
 
-        {/* Usage & Logout */}
+        {/* Usage, Sync & Logout */}
         <div className="flex items-center gap-3 ml-auto">
           <div className="hidden sm:flex items-center gap-2 text-sm text-gray-400">
             <span className="text-gold font-medium">${usage.today?.cost?.toFixed(4) || '0.00'}</span>
             <span>today</span>
           </div>
+
+          {/* Git Sync Button */}
+          <button
+            onClick={() => performSync(true)}
+            disabled={isSyncing}
+            className={`p-2 rounded-lg transition-colors relative group ${
+              isSyncing ? 'bg-dark-600' : 'hover:bg-dark-700'
+            }`}
+            title={syncStatus?.lastSync ? `Last sync: ${new Date(syncStatus.lastSync).toLocaleString()}` : 'Sync all projects'}
+          >
+            <RefreshCw className={`w-5 h-5 ${isSyncing ? 'animate-spin text-blue-400' : 'text-gray-400 group-hover:text-blue-400'}`} />
+            {syncStatus?.needsSync && !isSyncing && (
+              <span className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full" />
+            )}
+          </button>
+
+          {/* Sync Details Button */}
+          {syncResult && syncResult.totalCommits > 0 && (
+            <button
+              onClick={() => setShowSyncModal(true)}
+              className="hidden sm:flex items-center gap-1 px-2 py-1 bg-blue-500/20 text-blue-400 rounded-lg text-xs hover:bg-blue-500/30 transition-colors"
+            >
+              <GitBranch className="w-3 h-3" />
+              {syncResult.totalCommits} commits
+            </button>
+          )}
+
           <button onClick={onLogout} className="p-2 hover:bg-dark-700 rounded-lg" title="Logout">
             <LogOut className="w-5 h-5 text-gray-400" />
           </button>
         </div>
       </header>
+
+      {/* Sync Notification Toast */}
+      {syncNotification && (
+        <div className={`fixed top-16 right-4 z-50 p-4 rounded-xl shadow-xl animate-slide-in ${
+          syncNotification.isError ? 'bg-red-900/90 border border-red-700' : 'bg-dark-800/95 border border-blue-500/30'
+        }`}>
+          <div className="flex items-center gap-3">
+            <GitBranch className={`w-5 h-5 ${syncNotification.isError ? 'text-red-400' : 'text-blue-400'}`} />
+            <div>
+              <p className="font-medium text-sm">{syncNotification.message}</p>
+              {syncNotification.details && (
+                <p className="text-xs text-gray-400 mt-0.5">{syncNotification.details}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sync Details Modal */}
+      {showSyncModal && syncResult && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4" onClick={() => setShowSyncModal(false)}>
+          <div className="bg-dark-800 rounded-xl max-w-2xl w-full max-h-[80vh] overflow-hidden" onClick={e => e.stopPropagation()}>
+            <div className="p-4 border-b border-dark-600 flex items-center justify-between">
+              <h2 className="font-bold flex items-center gap-2">
+                <GitBranch className="w-5 h-5 text-blue-400" />
+                Git Sync Summary
+              </h2>
+              <button onClick={() => setShowSyncModal(false)} className="p-1 hover:bg-dark-700 rounded">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[60vh]">
+              <p className="text-sm text-gray-400 mb-4">
+                Synced at {new Date(syncResult.currentSync).toLocaleString()} -
+                {syncResult.lastSync ? ` Changes since ${new Date(syncResult.lastSync).toLocaleString()}` : ' First sync'}
+              </p>
+
+              {Object.entries(syncResult.projects).map(([project, data]) => (
+                <div key={project} className="mb-6">
+                  <h3 className="font-semibold text-lg mb-2 flex items-center gap-2">
+                    <span className={`w-2 h-2 rounded-full ${
+                      project === 'slabtrack' ? 'bg-blue-400' :
+                      project === 'blink' ? 'bg-purple-400' : 'bg-green-400'
+                    }`} />
+                    {project.charAt(0).toUpperCase() + project.slice(1)}
+                    <span className="text-sm font-normal text-gray-400">({data.count || 0} commits)</span>
+                  </h3>
+
+                  {data.commits && data.commits.length > 0 ? (
+                    <div className="space-y-2">
+                      {data.commits.map((commit, i) => (
+                        <div key={i} className="flex items-start gap-3 p-2 bg-dark-700/50 rounded-lg">
+                          <code className="text-xs font-mono text-blue-400 shrink-0">{commit.hash}</code>
+                          <p className="text-sm flex-1">{commit.message}</p>
+                          <span className="text-xs text-gray-500 shrink-0">{commit.relative}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500 italic">No new commits</p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden min-h-0">
         {/* Sidebar Overlay (Mobile) */}

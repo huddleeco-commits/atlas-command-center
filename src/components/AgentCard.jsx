@@ -1,6 +1,20 @@
 import React from 'react';
 
-function AgentCard({ agent, typing, onClick }) {
+function AgentCard({ agent, typing, onClick, compact = false }) {
+  if (compact) {
+    return (
+      <button
+        onClick={onClick}
+        className="p-2 bg-dark-600/50 hover:bg-dark-600 rounded-lg transition-all text-left flex items-center gap-2"
+        title={`${agent.name} - ${agent.role}`}
+      >
+        <span className="text-base">{agent.icon}</span>
+        <span className="text-xs font-medium text-white truncate flex-1">{agent.name}</span>
+        {typing && <span className="w-1.5 h-1.5 bg-gold rounded-full animate-pulse"></span>}
+      </button>
+    );
+  }
+
   return (
     <button
       onClick={onClick}

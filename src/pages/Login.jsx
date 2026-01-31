@@ -40,8 +40,8 @@ function Login({ onLogin }) {
           <div className="inline-flex items-center justify-center w-16 h-16 bg-gold/20 rounded-2xl mb-4">
             <Zap className="w-8 h-8 text-gold" />
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2">BE1st Command Center</h1>
-          <p className="text-gray-400">Sign in to access your AI team</p>
+          <h1 className="text-3xl font-bold text-white mb-2">ATLAS</h1>
+          <p className="text-gray-400">AI Business Orchestration by BE1st</p>
         </div>
 
         <form onSubmit={handleSubmit} className="bg-dark-800 rounded-2xl p-8 border border-dark-600">
