@@ -4,7 +4,7 @@ import {
   DollarSign, ChevronDown, ChevronRight, BookOpen, ExternalLink,
   Calendar, Settings, Plus, Target, CheckCircle, Circle, AlertTriangle,
   Clock, Activity, TrendingUp, PlayCircle, FileText, Loader2, BarChart2, Wrench,
-  Terminal, GitBranch, RefreshCw
+  Terminal, GitBranch, RefreshCw, Monitor
 } from 'lucide-react';
 import CostsPage from './CostsPage';
 import TerminalPage from './TerminalPage';
@@ -33,7 +33,7 @@ const formatCentralDate = (dateStr) => {
 };
 
 // ==================== MAIN DASHBOARD ====================
-function Dashboard({ socket, token, onLogout }) {
+function Dashboard({ socket, token, onLogout, onSwitchToTV }) {
   // Core state
   const [agents, setAgents] = useState([]);
   const [categories, setCategories] = useState({});
@@ -416,7 +416,7 @@ function Dashboard({ socket, token, onLogout }) {
         </div>
 
         {/* Desktop Navigation Tabs */}
-        <nav className="hidden md:flex items-center gap-1 flex-1">
+        <nav className="hidden md:flex items-center gap-1">
           {[
             { id: 'home', icon: Target, label: 'Home' },
             { id: 'chat', icon: MessageSquare, label: 'Chats' },
@@ -437,6 +437,19 @@ function Dashboard({ socket, token, onLogout }) {
             </button>
           ))}
         </nav>
+
+        {/* Centered: TV Dashboard Toggle */}
+        {onSwitchToTV && (
+          <div className="flex-1 flex justify-center">
+            <button
+              onClick={onSwitchToTV}
+              className="px-4 py-2 bg-gold hover:bg-gold/90 text-black rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+            >
+              <Monitor className="w-4 h-4" />
+              TV Dashboard
+            </button>
+          </div>
+        )}
 
         {/* Usage, Sync & Logout */}
         <div className="flex items-center gap-3 ml-auto">

@@ -59,30 +59,10 @@ function App() {
   }
 
   if (view === 'tv') {
-    return (
-      <div>
-        <button 
-          onClick={toggleView}
-          className="fixed top-4 right-40 z-50 px-4 py-2 bg-dark-700 hover:bg-dark-600 text-white rounded-lg text-sm"
-        >
-          Switch to Chat
-        </button>
-        <TVDashboard token={token} />
-      </div>
-    );
+    return <TVDashboard token={token} socket={socket} onSwitchToChat={toggleView} />;
   }
 
-  return (
-    <div>
-      <button 
-        onClick={toggleView}
-        className="fixed top-4 right-40 z-50 px-4 py-2 bg-gold hover:bg-gold/90 text-black rounded-lg text-sm font-medium"
-      >
-        TV Dashboard
-      </button>
-      <Dashboard socket={socket} token={token} onLogout={handleLogout} />
-    </div>
-  );
+  return <Dashboard socket={socket} token={token} onLogout={handleLogout} onSwitchToTV={toggleView} />;
 }
 
 export default App;

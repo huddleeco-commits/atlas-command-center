@@ -242,7 +242,8 @@ function TVDashboard({ token, socket, onSwitchToChat }) {
 
       {/* Header */}
       <div className="flex items-center justify-between mb-3 shrink-0">
-        <div className="flex items-center gap-3">
+        {/* Left: Logo */}
+        <div className="flex items-center gap-3 w-48">
           <div className="w-10 h-10 bg-gold/20 rounded-xl flex items-center justify-center">
             <Zap className="w-5 h-5 text-gold" />
           </div>
@@ -252,26 +253,29 @@ function TVDashboard({ token, socket, onSwitchToChat }) {
           </div>
         </div>
 
-        {/* NOW HAPPENING Indicator */}
-        {isNowHappening && (
-          <div className="flex items-center gap-2 px-4 py-2 bg-red-500/20 border border-red-500/50 rounded-lg animate-pulse">
-            <Radio className="w-4 h-4 text-red-400" />
-            <span className="text-red-400 font-medium text-sm">
-              {ralphActive ? 'Ralph Executing...' : `${activeAgents.size} Agent(s) Active`}
-            </span>
-          </div>
-        )}
-
+        {/* Center: Switch + Now Happening */}
         <div className="flex items-center gap-4">
+          {isNowHappening && (
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-red-500/20 border border-red-500/50 rounded-lg animate-pulse">
+              <Radio className="w-4 h-4 text-red-400" />
+              <span className="text-red-400 font-medium text-xs">
+                {ralphActive ? 'Ralph Executing...' : `${activeAgents.size} Agent(s) Active`}
+              </span>
+            </div>
+          )}
           {onSwitchToChat && (
             <button
               onClick={onSwitchToChat}
               className="px-4 py-2 bg-dark-700 hover:bg-dark-600 border border-dark-500 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
             >
               <MessageSquare className="w-4 h-4" />
-              Chat
+              Switch to Chat
             </button>
           )}
+        </div>
+
+        {/* Right: Status + Time */}
+        <div className="flex items-center gap-3 w-48 justify-end">
           <button
             onClick={() => setSoundEnabled(!soundEnabled)}
             className={`p-2 rounded-lg ${soundEnabled ? 'bg-green-500/20 text-green-400' : 'bg-dark-700 text-gray-400'}`}
@@ -279,16 +283,16 @@ function TVDashboard({ token, socket, onSwitchToChat }) {
           >
             {soundEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
           </button>
-          <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+          <div className={`px-2 py-1 rounded-full text-xs font-medium ${
             totalErrors === 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'
           }`}>
-            {totalErrors === 0 ? 'Healthy' : `${totalErrors} Errors`}
+            {totalErrors === 0 ? 'OK' : `${totalErrors}`}
           </div>
           <div className="text-right">
-            <p className="text-2xl font-bold text-white font-mono">
+            <p className="text-xl font-bold text-white font-mono">
               {time.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
             </p>
-            <p className="text-gray-400 text-xs">
+            <p className="text-gray-400 text-[10px]">
               {time.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
             </p>
           </div>
