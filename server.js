@@ -138,7 +138,64 @@ db.exec(`
     sync_data TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- Agent coordination sessions (team meetings, task coordination)
+  CREATE TABLE IF NOT EXISTS agent_coordination (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT UNIQUE NOT NULL,
+    type TEXT NOT NULL,
+    initiator_agent TEXT NOT NULL,
+    participants TEXT NOT NULL,
+    objective TEXT,
+    status TEXT DEFAULT 'active',
+    message_count INTEGER DEFAULT 0,
+    max_messages INTEGER DEFAULT 20,
+    total_tokens INTEGER DEFAULT 0,
+    total_cost REAL DEFAULT 0,
+    triggered_by_chat_id TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME
+  );
+
+  -- Individual agent-to-agent messages within coordination
+  CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    from_agent TEXT NOT NULL,
+    to_agent TEXT,
+    message_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tokens_used INTEGER DEFAULT 0,
+    cost REAL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- Coordination controls and settings
+  CREATE TABLE IF NOT EXISTS coordination_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    setting_key TEXT UNIQUE NOT NULL,
+    setting_value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
+
+// Seed coordination settings
+const defaultCoordinationSettings = [
+  { key: 'enabled', value: 'true' },
+  { key: 'max_messages_per_session', value: '20' },
+  { key: 'max_concurrent_sessions', value: '3' },
+  { key: 'cooldown_between_sessions_ms', value: '5000' },
+  { key: 'max_tokens_per_session', value: '10000' },
+  { key: 'max_cost_per_session', value: '1.00' }
+];
+
+defaultCoordinationSettings.forEach(({ key, value }) => {
+  try {
+    db.prepare(`INSERT OR IGNORE INTO coordination_settings (setting_key, setting_value) VALUES (?, ?)`).run(key, value);
+  } catch (e) { /* ignore */ }
+});
+
+console.log('[Coordination] Database tables and settings initialized');
 
 // Migration: Add call_type column to api_calls if it doesn't exist
 try {
@@ -600,6 +657,422 @@ async function getAllPlatformHealth() {
   }
   return health;
 }
+
+// ==================== MULTI-AGENT COORDINATION ENGINE ====================
+// Safe, controlled agent-to-agent communication within user ecosystem
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
+
+class CoordinationEngine {
+  constructor(database, socketIO) {
+    this.db = database;
+    this.io = socketIO;
+    this.activeSessions = new Map();
+    this.paused = false;
+    this.lastSessionTime = 0;
+  }
+
+  // Get setting value
+  getSetting(key) {
+    const row = this.db.prepare('SELECT setting_value FROM coordination_settings WHERE setting_key = ?').get(key);
+    if (!row) return null;
+    const val = row.setting_value;
+    return isNaN(val) ? val : parseFloat(val);
+  }
+
+  // Update setting
+  setSetting(key, value) {
+    this.db.prepare(`
+      INSERT INTO coordination_settings (setting_key, setting_value) VALUES (?, ?)
+      ON CONFLICT(setting_key) DO UPDATE SET setting_value = ?, updated_at = datetime('now')
+    `).run(key, String(value), String(value));
+  }
+
+  // Check if coordination is enabled
+  isEnabled() {
+    return this.getSetting('enabled') === 'true' && !this.paused;
+  }
+
+  // Create new coordination session
+  async createSession(type, initiator, participants, objective, triggeredByChatId = null) {
+    if (!this.isEnabled()) {
+      throw new Error('Agent coordination is currently paused');
+    }
+
+    // Check cooldown
+    const cooldown = this.getSetting('cooldown_between_sessions_ms') || 5000;
+    const timeSinceLastSession = Date.now() - this.lastSessionTime;
+    if (timeSinceLastSession < cooldown) {
+      throw new Error(`Please wait ${Math.ceil((cooldown - timeSinceLastSession) / 1000)} seconds before starting another coordination`);
+    }
+
+    // Check concurrent session limit
+    const maxConcurrent = this.getSetting('max_concurrent_sessions') || 3;
+    const activeSessions = this.db.prepare(`
+      SELECT COUNT(*) as count FROM agent_coordination WHERE status = 'active'
+    `).get();
+
+    if (activeSessions.count >= maxConcurrent) {
+      throw new Error(`Maximum concurrent coordination sessions (${maxConcurrent}) reached`);
+    }
+
+    const sessionId = generateUUID();
+    const maxMessages = this.getSetting('max_messages_per_session') || 20;
+
+    this.db.prepare(`
+      INSERT INTO agent_coordination
+      (session_id, type, initiator_agent, participants, objective, max_messages, triggered_by_chat_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(sessionId, type, initiator, JSON.stringify(participants), objective, maxMessages, triggeredByChatId);
+
+    this.activeSessions.set(sessionId, {
+      messageCount: 0,
+      tokenCount: 0,
+      costTotal: 0,
+      startTime: Date.now()
+    });
+
+    this.lastSessionTime = Date.now();
+
+    // Broadcast session start
+    this.io.emit('coordination_started', {
+      sessionId,
+      type,
+      initiator,
+      participants,
+      objective,
+      timestamp: new Date().toISOString()
+    });
+
+    // Log activity
+    logActivity('coordination', initiator, `Coordination started: ${type}`, objective);
+
+    console.log(`[Coordination] Session ${sessionId} started: ${type} by ${initiator}`);
+    return sessionId;
+  }
+
+  // Send agent-to-agent message within session
+  async sendAgentMessage(sessionId, fromAgent, toAgent, messageType, prompt) {
+    const session = this.db.prepare(`
+      SELECT * FROM agent_coordination WHERE session_id = ? AND status = 'active'
+    `).get(sessionId);
+
+    if (!session) {
+      throw new Error('Coordination session not found or not active');
+    }
+
+    // Check message limit
+    if (session.message_count >= session.max_messages) {
+      await this.completeSession(sessionId, 'Message limit reached');
+      throw new Error(`Session message limit (${session.max_messages}) reached`);
+    }
+
+    // Check token limit
+    const maxTokens = this.getSetting('max_tokens_per_session') || 10000;
+    const sessionData = this.activeSessions.get(sessionId);
+    if (sessionData && sessionData.tokenCount >= maxTokens) {
+      await this.completeSession(sessionId, 'Token limit reached');
+      throw new Error(`Session token limit (${maxTokens}) reached`);
+    }
+
+    // Check cost limit
+    const maxCost = this.getSetting('max_cost_per_session') || 1.0;
+    if (sessionData && sessionData.costTotal >= maxCost) {
+      await this.completeSession(sessionId, 'Cost limit reached');
+      throw new Error(`Session cost limit ($${maxCost}) reached`);
+    }
+
+    // Emit typing indicator
+    this.io.emit('coordination_agent_typing', { sessionId, agentId: fromAgent });
+
+    // Get the agent response
+    const response = await this.invokeAgent(fromAgent, toAgent, prompt, sessionId, session.objective);
+
+    // Save message to database
+    this.db.prepare(`
+      INSERT INTO agent_messages (session_id, from_agent, to_agent, message_type, content, tokens_used, cost)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(sessionId, fromAgent, toAgent, messageType, response.content, response.tokens, response.cost);
+
+    // Update session counts
+    this.db.prepare(`
+      UPDATE agent_coordination
+      SET message_count = message_count + 1, total_tokens = total_tokens + ?, total_cost = total_cost + ?
+      WHERE session_id = ?
+    `).run(response.tokens, response.cost, sessionId);
+
+    // Update in-memory tracking
+    if (sessionData) {
+      sessionData.messageCount++;
+      sessionData.tokenCount += response.tokens;
+      sessionData.costTotal += response.cost;
+    }
+
+    // Broadcast message to UI
+    this.io.emit('coordination_message', {
+      sessionId,
+      fromAgent,
+      toAgent,
+      messageType,
+      content: response.content,
+      tokens: response.tokens,
+      cost: response.cost,
+      timestamp: new Date().toISOString()
+    });
+
+    console.log(`[Coordination] ${fromAgent} -> ${toAgent || 'all'}: ${response.content.slice(0, 50)}...`);
+
+    return response;
+  }
+
+  // Invoke an agent within coordination context
+  async invokeAgent(agentId, targetAgent, prompt, sessionId, objective) {
+    const agent = agents.agents.find(a => a.id === agentId);
+    if (!agent) {
+      throw new Error(`Agent '${agentId}' not found`);
+    }
+
+    // Build coordination-aware system prompt
+    const systemPrompt = agent.prompt + `
+
+[MULTI-AGENT COORDINATION MODE]
+You are participating in a coordinated team session.
+Session objective: ${objective || 'Team collaboration'}
+Communicating with: ${targetAgent || 'all team members'}
+
+Guidelines:
+- Keep responses focused and actionable (2-4 sentences)
+- Build on others' contributions
+- Be specific with your expertise
+- Flag any concerns or blockers`;
+
+    try {
+      const response = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 512,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: prompt }]
+      });
+
+      const tokensIn = response.usage.input_tokens;
+      const tokensOut = response.usage.output_tokens;
+      const tokens = tokensIn + tokensOut;
+      const cost = (tokensIn * 0.003 + tokensOut * 0.015) / 1000;
+
+      // Log API usage
+      logApiUsage(tokensIn, tokensOut, cost, agentId, `Coordination: ${sessionId.slice(0, 8)}`, 'coordination');
+
+      return {
+        content: response.content[0].text,
+        tokens,
+        cost,
+        agentId,
+        agentName: agent.name
+      };
+    } catch (error) {
+      console.error(`[Coordination] Agent ${agentId} invocation failed:`, error.message);
+      throw error;
+    }
+  }
+
+  // Get previous messages in session for context
+  getSessionContext(sessionId, limit = 10) {
+    return this.db.prepare(`
+      SELECT from_agent, to_agent, content, message_type
+      FROM agent_messages
+      WHERE session_id = ?
+      ORDER BY created_at DESC
+      LIMIT ?
+    `).all(sessionId, limit).reverse();
+  }
+
+  // Pause all coordination
+  pause() {
+    this.paused = true;
+    this.io.emit('coordination_paused', { timestamp: new Date().toISOString() });
+    logActivity('coordination', 'system', 'Coordination paused', 'User paused agent coordination');
+    console.log('[Coordination] Paused by user');
+  }
+
+  // Resume coordination
+  resume() {
+    this.paused = false;
+    this.io.emit('coordination_resumed', { timestamp: new Date().toISOString() });
+    logActivity('coordination', 'system', 'Coordination resumed', 'User resumed agent coordination');
+    console.log('[Coordination] Resumed by user');
+  }
+
+  // Complete a session
+  async completeSession(sessionId, summary = '') {
+    this.db.prepare(`
+      UPDATE agent_coordination
+      SET status = 'completed', completed_at = datetime('now')
+      WHERE session_id = ?
+    `).run(sessionId);
+
+    const session = this.db.prepare('SELECT * FROM agent_coordination WHERE session_id = ?').get(sessionId);
+
+    this.activeSessions.delete(sessionId);
+
+    this.io.emit('coordination_completed', {
+      sessionId,
+      summary,
+      messageCount: session?.message_count || 0,
+      totalCost: session?.total_cost || 0,
+      timestamp: new Date().toISOString()
+    });
+
+    logActivity('coordination', 'system', 'Coordination completed', summary || `Session ${sessionId.slice(0, 8)} finished`);
+    console.log(`[Coordination] Session ${sessionId} completed: ${summary}`);
+  }
+
+  // Cancel a session
+  async cancelSession(sessionId, reason = 'Cancelled by user') {
+    this.db.prepare(`
+      UPDATE agent_coordination
+      SET status = 'cancelled', completed_at = datetime('now')
+      WHERE session_id = ?
+    `).run(sessionId);
+
+    this.activeSessions.delete(sessionId);
+
+    this.io.emit('coordination_cancelled', {
+      sessionId,
+      reason,
+      timestamp: new Date().toISOString()
+    });
+
+    logActivity('coordination', 'system', 'Coordination cancelled', reason);
+    console.log(`[Coordination] Session ${sessionId} cancelled: ${reason}`);
+  }
+
+  // Get session status
+  getSessionStatus(sessionId) {
+    const session = this.db.prepare('SELECT * FROM agent_coordination WHERE session_id = ?').get(sessionId);
+    if (!session) return null;
+
+    const messages = this.db.prepare(`
+      SELECT * FROM agent_messages WHERE session_id = ? ORDER BY created_at
+    `).all(sessionId);
+
+    return { ...session, messages, participants: JSON.parse(session.participants) };
+  }
+
+  // Get all active sessions
+  getActiveSessions() {
+    return this.db.prepare(`SELECT * FROM agent_coordination WHERE status = 'active' ORDER BY created_at DESC`).all();
+  }
+
+  // Get session history
+  getHistory(limit = 20) {
+    return this.db.prepare(`
+      SELECT * FROM agent_coordination ORDER BY created_at DESC LIMIT ?
+    `).all(limit);
+  }
+}
+
+// Coordination helper functions
+async function delegateTask(coordinator, objective, assignedAgents, context, chatId) {
+  const sessionId = await coordinator.createSession('task_delegation', 'prime', assignedAgents, objective, chatId);
+
+  try {
+    // Prime initiates
+    await coordinator.sendAgentMessage(sessionId, 'prime', null, 'request',
+      `TASK: ${objective}\n\nContext: ${context}\n\nTeam, I need each of you to contribute your expertise to this task.`);
+
+    // Get previous context for each agent
+    const contextMessages = coordinator.getSessionContext(sessionId);
+    const contextStr = contextMessages.map(m => `${m.from_agent}: ${m.content}`).join('\n');
+
+    // Each agent responds
+    for (const agentId of assignedAgents) {
+      await coordinator.sendAgentMessage(sessionId, agentId, 'prime', 'response',
+        `Task: ${objective}\n\nPrevious discussion:\n${contextStr}\n\nProvide your expertise on this task.`);
+    }
+
+    // Prime synthesizes all inputs
+    const allMessages = coordinator.getSessionContext(sessionId, 20);
+    const synthesisContext = allMessages.map(m => `${m.from_agent}: ${m.content}`).join('\n\n');
+
+    const synthesis = await coordinator.sendAgentMessage(sessionId, 'prime', null, 'decision',
+      `Based on team input:\n\n${synthesisContext}\n\nSynthesize all contributions into a cohesive recommendation.`);
+
+    await coordinator.completeSession(sessionId, synthesis.content.slice(0, 200));
+
+    return { sessionId, result: synthesis.content };
+  } catch (error) {
+    await coordinator.cancelSession(sessionId, `Error: ${error.message}`);
+    throw error;
+  }
+}
+
+async function conductTeamMeeting(coordinator, topic, participants, chatId, rounds = 2) {
+  const sessionId = await coordinator.createSession('team_meeting', 'prime', participants, topic, chatId);
+
+  try {
+    // Opening
+    await coordinator.sendAgentMessage(sessionId, 'prime', null, 'request',
+      `TEAM MEETING: ${topic}\n\nParticipants: ${participants.join(', ')}\n\nLet's discuss this topic. I'll facilitate.`);
+
+    // Discussion rounds
+    for (let round = 0; round < rounds; round++) {
+      const contextMessages = coordinator.getSessionContext(sessionId);
+      const contextStr = contextMessages.map(m => `${m.from_agent}: ${m.content}`).join('\n');
+
+      for (const agentId of participants) {
+        await coordinator.sendAgentMessage(sessionId, agentId, null, 'update',
+          `Topic: ${topic}\nRound ${round + 1} of ${rounds}\n\nPrevious discussion:\n${contextStr}\n\nShare your perspective.`);
+      }
+    }
+
+    // Prime summarizes
+    const allMessages = coordinator.getSessionContext(sessionId, 30);
+    const meetingContent = allMessages.map(m => `${m.from_agent}: ${m.content}`).join('\n\n');
+
+    const summary = await coordinator.sendAgentMessage(sessionId, 'prime', null, 'decision',
+      `Meeting discussion:\n\n${meetingContent}\n\nSummarize the key takeaways and any decisions made.`);
+
+    await coordinator.completeSession(sessionId, summary.content.slice(0, 200));
+
+    return { sessionId, summary: summary.content };
+  } catch (error) {
+    await coordinator.cancelSession(sessionId, `Error: ${error.message}`);
+    throw error;
+  }
+}
+
+async function agentHandoff(coordinator, fromAgent, toAgent, task, context, chatId) {
+  const sessionId = await coordinator.createSession('handoff', fromAgent, [fromAgent, toAgent], task, chatId);
+
+  try {
+    // Handoff message
+    await coordinator.sendAgentMessage(sessionId, fromAgent, toAgent, 'handoff',
+      `HANDOFF: I'm passing this task to you.\n\nTask: ${task}\n\nContext: ${context}\n\nPlease take over and complete this.`);
+
+    // Receiving agent acknowledges
+    const handoffContext = coordinator.getSessionContext(sessionId);
+    const contextStr = handoffContext.map(m => `${m.from_agent}: ${m.content}`).join('\n');
+
+    const ack = await coordinator.sendAgentMessage(sessionId, toAgent, fromAgent, 'response',
+      `Handoff context:\n${contextStr}\n\nAcknowledge the handoff and outline your approach.`);
+
+    await coordinator.completeSession(sessionId, `Handoff: ${fromAgent} -> ${toAgent}`);
+
+    return { sessionId, acknowledgment: ack.content };
+  } catch (error) {
+    await coordinator.cancelSession(sessionId, `Error: ${error.message}`);
+    throw error;
+  }
+}
+
+// Coordinator instance (initialized after io is created)
+let coordinator = null;
 
 // ==================== SMS/EMAIL INTEGRATION ====================
 // Carrier MMS gateways (cleaner than SMS gateways - no "no subject" issues)
@@ -2401,6 +2874,10 @@ function getActivityFeed(limit = 20) {
 // Load agents config
 const agents = require('./agents.json');
 
+// Initialize coordination engine
+coordinator = new CoordinationEngine(db, io);
+console.log('[Coordination] Engine initialized');
+
 // Auth middleware
 const authMiddleware = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
@@ -3397,6 +3874,126 @@ app.post('/api/ralph/clear-stuck', authMiddleware, (req, res) => {
   res.json({ success: true, cleared });
 });
 
+// ==================== COORDINATION API ENDPOINTS ====================
+// Get coordination status (active sessions, settings, pause state)
+app.get('/api/coordination/status', authMiddleware, (req, res) => {
+  const active = coordinator.getActiveSessions();
+  const settings = db.prepare('SELECT * FROM coordination_settings').all();
+  const settingsObj = {};
+  settings.forEach(s => settingsObj[s.setting_key] = s.setting_value);
+  res.json({
+    active,
+    settings: settingsObj,
+    paused: coordinator.paused,
+    activeCount: active.length
+  });
+});
+
+// Get session details with messages
+app.get('/api/coordination/session/:sessionId', authMiddleware, (req, res) => {
+  const sessionData = coordinator.getSessionStatus(req.params.sessionId);
+  if (!sessionData) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  res.json(sessionData);
+});
+
+// Get coordination history
+app.get('/api/coordination/history', authMiddleware, (req, res) => {
+  const limit = parseInt(req.query.limit) || 20;
+  const history = coordinator.getHistory(limit);
+  res.json(history);
+});
+
+// Pause coordination
+app.post('/api/coordination/pause', authMiddleware, (req, res) => {
+  coordinator.pause();
+  res.json({ success: true, paused: true });
+});
+
+// Resume coordination
+app.post('/api/coordination/resume', authMiddleware, (req, res) => {
+  coordinator.resume();
+  res.json({ success: true, paused: false });
+});
+
+// Cancel active session
+app.post('/api/coordination/session/:sessionId/cancel', authMiddleware, async (req, res) => {
+  try {
+    await coordinator.cancelSession(req.params.sessionId, req.body.reason || 'Cancelled by user');
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update settings
+app.put('/api/coordination/settings', authMiddleware, (req, res) => {
+  const { key, value } = req.body;
+  if (!key) {
+    return res.status(400).json({ error: 'Setting key is required' });
+  }
+  coordinator.setSetting(key, value);
+  res.json({ success: true, key, value });
+});
+
+// Trigger manual coordination (for testing)
+app.post('/api/coordination/trigger', authMiddleware, async (req, res) => {
+  const { type, objective, participants, context } = req.body;
+
+  if (!type || !objective || !participants || !Array.isArray(participants)) {
+    return res.status(400).json({ error: 'type, objective, and participants (array) are required' });
+  }
+
+  try {
+    let result;
+    switch (type) {
+      case 'task_delegation':
+        result = await delegateTask(coordinator, objective, participants, context || '', null);
+        break;
+      case 'team_meeting':
+        result = await conductTeamMeeting(coordinator, objective, participants, null, 2);
+        break;
+      case 'handoff':
+        if (participants.length !== 2) {
+          return res.status(400).json({ error: 'Handoff requires exactly 2 participants [from, to]' });
+        }
+        result = await agentHandoff(coordinator, participants[0], participants[1], objective, context || '', null);
+        break;
+      default:
+        return res.status(400).json({ error: 'Invalid coordination type. Use: task_delegation, team_meeting, handoff' });
+    }
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get coordination statistics
+app.get('/api/coordination/stats', authMiddleware, (req, res) => {
+  const totalSessions = db.prepare('SELECT COUNT(*) as count FROM agent_coordination').get();
+  const completedSessions = db.prepare(`SELECT COUNT(*) as count FROM agent_coordination WHERE status = 'completed'`).get();
+  const totalMessages = db.prepare('SELECT COUNT(*) as count FROM agent_messages').get();
+  const totalCost = db.prepare('SELECT SUM(cost) as total FROM agent_messages').get();
+  const byType = db.prepare(`
+    SELECT type, COUNT(*) as count, SUM(total_cost) as cost
+    FROM agent_coordination
+    GROUP BY type
+  `).all();
+  const recentSessions = db.prepare(`
+    SELECT * FROM agent_coordination ORDER BY created_at DESC LIMIT 5
+  `).all();
+
+  res.json({
+    totalSessions: totalSessions.count,
+    completedSessions: completedSessions.count,
+    totalMessages: totalMessages.count,
+    totalCost: totalCost.total || 0,
+    byType,
+    recentSessions
+  });
+});
+
 // ==================== CONTACTS API ENDPOINTS ====================
 app.get('/api/contacts', authMiddleware, (req, res) => {
   const contacts = db.prepare('SELECT * FROM contacts ORDER BY name').all();
@@ -3640,6 +4237,44 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log('User connected:', socket.user.username);
+
+  // ==================== COORDINATION SOCKET EVENTS ====================
+  socket.on('coordination:pause', () => {
+    coordinator.pause();
+  });
+
+  socket.on('coordination:resume', () => {
+    coordinator.resume();
+  });
+
+  socket.on('coordination:cancel', async (sessionId) => {
+    try {
+      await coordinator.cancelSession(sessionId, 'Cancelled via socket');
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  socket.on('coordination:trigger', async (data) => {
+    const { type, objective, participants, context } = data;
+    try {
+      let result;
+      switch (type) {
+        case 'task_delegation':
+          result = await delegateTask(coordinator, objective, participants, context || '', null);
+          break;
+        case 'team_meeting':
+          result = await conductTeamMeeting(coordinator, objective, participants, null, 2);
+          break;
+        default:
+          socket.emit('error', { message: 'Invalid coordination type' });
+          return;
+      }
+      socket.emit('coordination:result', result);
+    } catch (error) {
+      socket.emit('error', { message: error.message });
+    }
+  });
 
   // ==================== RALPH WORKER HANDLING ====================
   // Workers connect with auth.workerType === 'ralph'

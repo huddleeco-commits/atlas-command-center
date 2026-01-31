@@ -9,6 +9,7 @@ import {
 import CostsPage from './CostsPage';
 import TerminalPage from './TerminalPage';
 import RalphVisualizer from '../components/RalphVisualizer';
+import CoordinationPanel from '../components/CoordinationPanel';
 
 // Central Time formatting helper
 const formatCentralTime = (dateStr, options = {}) => {
@@ -422,6 +423,7 @@ function Dashboard({ socket, token, onLogout, onSwitchToTV }) {
             { id: 'chat', icon: MessageSquare, label: 'Chats' },
             { id: 'terminal', icon: Terminal, label: 'Terminal' },
             { id: 'calendar', icon: Calendar, label: 'Calendar' },
+            { id: 'coordination', icon: Users, label: 'Coordination' },
             { id: 'wiki', icon: BookOpen, label: 'Wiki' },
             { id: 'costs', icon: DollarSign, label: 'Costs' },
           ].map(tab => (
@@ -687,6 +689,13 @@ function Dashboard({ socket, token, onLogout, onSwitchToTV }) {
             <CalendarView events={calendarEvents} token={token} onRefresh={fetchCalendarEvents} />
           )}
 
+          {/* COORDINATION TAB */}
+          {activeTab === 'coordination' && (
+            <div className="h-full">
+              <CoordinationPanel token={token} socket={socket} />
+            </div>
+          )}
+
           {/* WIKI TAB */}
           {activeTab === 'wiki' && (
             <WikiView pages={wikiPages} onRefresh={fetchWikiPages} token={token} />
@@ -710,9 +719,8 @@ function Dashboard({ socket, token, onLogout, onSwitchToTV }) {
           { id: 'home', icon: Target, label: 'Home' },
           { id: 'chat', icon: MessageSquare, label: 'Chats' },
           { id: 'terminal', icon: Terminal, label: 'Term' },
+          { id: 'coordination', icon: Users, label: 'Team' },
           { id: 'calendar', icon: Calendar, label: 'Cal' },
-          { id: 'wiki', icon: BookOpen, label: 'Wiki' },
-          { id: 'costs', icon: DollarSign, label: 'Costs' },
         ].map(tab => (
           <button
             key={tab.id}
