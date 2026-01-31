@@ -65,4 +65,7 @@ Copy-Item -Path ".\package.json" -Destination "$DestPath\" -Force
 
 Write-Host "`n=== Deploy Complete ===" -ForegroundColor Green
 Write-Host "Files copied. Watcher will restart PM2 automatically." -ForegroundColor Gray
-Write-Host "Server URL: http://100.117.103.53:3456" -ForegroundColor Cyan
+Write-Host "Server URL: http://100.117.103.53:3002" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Note: ralph-worker.js runs on WORKSTATION, not server." -ForegroundColor DarkGray
+Write-Host "      Restart workstation worker: pm2 restart ralph-worker" -ForegroundColor DarkGray
