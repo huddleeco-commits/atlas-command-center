@@ -334,6 +334,7 @@ async function executeTask(task) {
       socket.emit('ralph:worker:complete', {
         taskId,
         project,
+        task: prompt, // Include task description for Wiki
         success: code === 0,
         duration,
         turns: state.turns,
